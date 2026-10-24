@@ -4,6 +4,8 @@ export class EventEmitter<T> { private l: ((e: T) => void)[] = []; event = (f: (
 export class CancellationTokenSource { token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() { } }) }; cancel() { } }
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, rmSync } from 'node:fs';
 export class Range { constructor(public start: unknown, public end: unknown) { } }
+export class Position { constructor(public line: number, public character: number) { } }
+export class Location { constructor(public uri: Uri, public range: Range) { } }
 export class WorkspaceEdit { ops: { uri: Uri; text: string }[] = []; replace(uri: Uri, _r: unknown, text: string) { this.ops.push({ uri, text }); } createFile(uri: Uri, o: { contents?: Uint8Array }) { this.ops.push({ uri, text: Buffer.from(o.contents ?? '').toString('utf8') }); } }
 export class LanguageModelTextPart { constructor(public value: string) { } }
 export class LanguageModelToolCallPart { constructor(public callId: string, public name: string, public input: unknown) { } }
@@ -30,7 +32,9 @@ export const workspace = {
 };
 export const ViewColumn = { Active: -1, Beside: -2 };
 export const window = { showInformationMessage: async () => 'Run', showWarningMessage: async () => 'Delete', showErrorMessage: async () => undefined, activeTextEditor: undefined, tabGroups: { activeTabGroup: { activeTab: undefined }, close: async () => true }, createOutputChannel: () => ({ appendLine() { }, dispose() { } }), createStatusBarItem: () => ({ show() { }, dispose() { } }), withProgress: async (_o: unknown, f: (p: unknown) => unknown) => f({ report() { } }) };
-export const commands = { executeCommand: async () => undefined, registerCommand: () => ({ dispose() { } }) };
+export const DiagnosticSeverity = { Error: 0, Warning: 1, Information: 2, Hint: 3 };
+export const languages = { getDiagnostics: ((_u: Uri) => []) as (u: Uri) => unknown[] };
+export const commands = { executeCommand: (async (..._args: unknown[]) => undefined) as (...args: unknown[]) => Promise<unknown>, registerCommand: () => ({ dispose() { } }) };
 export const lm = { selectChatModels: async () => [], registerTool: () => ({ dispose() { } }) };
 export const authentication = { getSession: async () => ({ accessToken: 'test-token' }) };
 export const chat = { createChatParticipant: () => ({}) };

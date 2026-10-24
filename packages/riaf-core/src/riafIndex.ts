@@ -18,16 +18,17 @@ import { basename, join } from 'path';
 import { chunkFile, extractSymbolsFromFile, SKIP_LANGUAGES, supportsSymbolExtraction } from './codeChunker.js';
 import { detectCommands } from './commandDetector.js';
 import { indexConfigEnvironments } from './configEnvIndexer.js';
-import { createEmbedder, Embedder, EmbeddingConfig } from './embeddingService.js';
+import { createEmbedder, Embedder, EmbeddingConfig, EmbeddingVector } from './embeddingService.js';
+import { HnswIndex, HnswOptions } from './hnsw.js';
 import { FileChangeEvent, WorkspaceFileWatcher } from './fileWatcher.js';
 import { indexGatewayRoutes } from './gatewayRouteIndexer.js';
-import { getGitDiffStat, getRecentlyChangedFiles } from './gitContextIndexer.js';
+import { getGitBranch, getGitDiffStat, getGitLog, getGitStatus, getRecentlyChangedFiles } from './gitContextIndexer.js';
 import { indexGitlabPipelines, PipelineJob } from './gitlabCiIndexer.js';
 import { indexAllSpringServices } from './javaSpringIndexer.js';
 import { indexKubernetesManifests } from './kubernetesYamlIndexer.js';
 import { indexMavenDependencies } from './mavenDependencyIndexer.js';
 import { indexNpmDependencies } from './npmImpactIndexer.js';
-import { hashWorkspaceRoot, RepoIntelligenceDb } from './repoIntelligenceDb.js';
+import { ChunkLedgerEntry, hashWorkspaceRoot, K8sResource, RepoIntelligenceDb, SpringEndpoint } from './repoIntelligenceDb.js';
 import { formatRepoIntelligenceIndexingReport } from './repoIntelligenceIndexingReport.js';
 import {
 	ApiContractResult,
@@ -49,10 +50,36 @@ import {
 } from './repoIntelligenceTypes.js';
 import { OrgExtensionIndexerOptions, resolveOrgExtensionIndexerOptions } from './staasIndexerDefaults.js';
 import { indexTerraformResources, TerraformResource } from './terraformIndexer.js';
+import { ensureTreeSitterLanguages, grammarLanguageFor, setTreeSitterEnabled, setTreeSitterWasmDir, treeSitterReady } from './treeSitterChunker.js';
 import { computeMetrics } from './universalGraphAnalyzer.js';
 import { extractImports, ImportEdge } from './universalImportExtractor.js';
+import { createModuleResolver, ModuleResolver } from './moduleResolver.js';
+import { extractSymbolEdges, formatNeighborhood, maskSource, type DefinitionResolver, type SymbolEdge, type SymbolNeighborhood } from './symbolGraph.js';
+
+/**
+ * Resolve a simple symbol name to its defining file: the file this file imports from wins, then a
+ * unique definer anywhere in the workspace. Ambiguous names (several definers, none imported) are
+ * left unresolved so a `save()` does not get pinned to a random repository.
+ */
+function makeDefinitionResolver(definers: Map<string, string[]>): DefinitionResolver {
+	return (name, ctx) => {
+		const files = definers.get(name);
+		if (!files?.length) return null;
+		if (files.length === 1) return files[0];
+		const imported = files.filter(f => ctx.importedFiles.has(f));
+		if (imported.length === 1) return imported[0];
+		if (ctx.importedFrom) {
+			const hint = ctx.importedFrom.replace(/\\/g, '/').replace(/^\.\//, '');
+			const byHint = files.filter(f => f.includes(hint) || hint.split('/').pop()!.replace(/\.\w+$/, '') === f.split('/').pop()!.replace(/\.\w+$/, ''));
+			if (byHint.length === 1) return byHint[0];
+		}
+		if (files.includes(ctx.fromFile)) return ctx.fromFile;
+		return null;
+	};
+}
 import { classifyNode, isEntryPoint } from './universalNodeClassifier.js';
-import { compileExcludeGlobs, detectLanguageForPath, RawScanResult, scanWorkspace } from './workspaceScanner.js';
+import { buildExcludeMatcher, detectLanguageForPath, RawScanResult, scanWorkspace } from './workspaceScanner.js';
+import { GlobOptions, globWorkspace, GrepOptions, GrepResult, grepWorkspace } from './workspaceSearch.js';
 
 // ── public config / result types ────────────────────────────────────────────
 
@@ -71,7 +98,42 @@ export interface RiafConfig {
 	persistDebounceMs?: number;
 	/** Timeout for a single `summarize` call (ms). Default 30000. */
 	summarizeTimeoutMs?: number;
+	/** Honour `.gitignore` files when scanning and watching (default true). */
+	respectGitignore?: boolean;
+	/** Delay before derived data (org indexers, graph metrics) is recomputed after incremental changes (ms). Default 1500. */
+	derivedRefreshDebounceMs?: number;
+	/**
+	 * AST chunking / symbols via tree-sitter. `false` disables it; an object may point at a
+	 * directory with the wasm grammars (defaults to the installed `@vscode/tree-sitter-wasm`).
+	 * Falls back to regex heuristics per language when a grammar is unavailable.
+	 */
+	treeSitter?: boolean | { wasmDir?: string };
+	/** Explicit ripgrep binary for `grep()` (VS Code's bundled one, for instance). Discovered on PATH otherwise. */
+	ripgrepPath?: string;
+	/** Tuning for the in-memory HNSW vector index. */
+	vectorIndex?: HnswOptions;
 }
+
+/** Which org-extension indexers a changed path can affect. */
+export type OrgSlice = 'spring' | 'maven' | 'k8s' | 'gateway' | 'npm' | 'config' | 'terraform' | 'ci';
+
+/** Map a relative path to the org slices that must be re-run when it changes. */
+export const orgSlicesForPath = (relPath: string): OrgSlice[] => {
+	const p = relPath.replace(/\\/g, '/');
+	const base = basename(p).toLowerCase();
+	const out = new Set<OrgSlice>();
+	if (base === 'pom.xml') { out.add('maven'); out.add('spring'); }
+	if (/\.(java|kt)$/.test(base)) out.add('spring');
+	if (base === 'package.json') out.add('npm');
+	if (/\.(ya?ml)$/.test(base)) {
+		out.add('k8s'); out.add('config');
+		if (/^application(-[\w-]+)?\.ya?ml$/.test(base)) out.add('gateway');
+		if (base === '.gitlab-ci.yml' || base.includes('pipeline') || base.includes('-ci') || p.includes('.gitlab/') || p.includes('.github/')) out.add('ci');
+	}
+	if (/\.(properties)$/.test(base)) out.add('config');
+	if (/\.tf$/.test(base)) out.add('terraform');
+	return [...out];
+};
 
 export interface IndexProgress {
 	phase: string;
@@ -105,6 +167,8 @@ export interface ContextualProfile {
 	tests: string[];
 	/** Compact, injectable text describing the workspace (and the active file's neighbourhood). */
 	profileText: string;
+	/** One-hop symbol neighbourhood of the active file (callers, callees), prompt-ready; empty when unknown. */
+	neighborhood?: string;
 }
 
 export interface SearchOptions {
@@ -133,10 +197,14 @@ const TEST_PATTERNS = [/\.(test|spec)\.(ts|js|tsx|jsx|py|java|kt|rb)$/, /Test\.(
 const isTestFile = (p: string): boolean => TEST_PATTERNS.some(r => r.test(p));
 
 const EMBEDDING_BATCH = 500;
-const EMBED_TEXT_CHARS = 512;
+/** Default cap on characters sent per chunk — a full 80-line chunk, not a 512-char prefix. */
+const EMBED_TEXT_CHARS = 6_000;
 
 const normalisePath = (p: string): string => p.replace(/\\/g, '/').replace(/^\.\//, '');
+const buildExcludeMatcherNoGitignore = (globs?: readonly string[]) => buildExcludeMatcher(null, globs);
 const contentHash = (content: string): string => createHash('sha256').update(content).digest('hex').slice(0, 32);
+const symbolFingerprint = (content: string, language: string | null | undefined, filePath: string): string =>
+	contentHash(`${treeSitterReady(grammarLanguageFor(language, filePath)) ? 'ast' : 'rx'}\u0000${content}`);
 const yieldToEventLoop = (): Promise<void> => new Promise(r => setImmediate(r));
 
 const buildScanContext = (scan: RawScanResult, commands: ReturnType<typeof detectCommands>, workspaceRoot: string): string => {
@@ -217,6 +285,19 @@ export class RiafIndex {
 	private _closed = false;
 	private _status: IndexStatus = { indexed: false, files: 0, chunks: 0, symbols: 0 };
 	private _configFileCount = 0;
+	private _isExcluded: (relPath: string) => boolean;
+	/** In-memory ANN index over chunk embeddings (built lazily from the DB). */
+	private _vectorIndex: HnswIndex | null = null;
+	private _resolver: ModuleResolver | null = null;
+	private _vectorIndexBuild: Promise<void> | null = null;
+	private readonly _vectorIds = new Map<string, number>();
+	private readonly _vectorKeys = new Map<number, { filePath: string; startLine: number }>();
+	private _nextVectorId = 1;
+	/** Derived-data refresh scheduled after incremental changes. */
+	private _pendingOrgSlices = new Set<OrgSlice>();
+	private _pendingGraphMetrics = false;
+	private _derivedTimer: ReturnType<typeof setTimeout> | null = null;
+	private _derivedPromise: Promise<void> | null = null;
 
 	private constructor(cfg: RiafConfig, db: RepoIntelligenceDb) {
 		this._cfg = cfg;
@@ -226,7 +307,29 @@ export class RiafIndex {
 		this._embedder = createEmbedder(cfg.embeddings);
 		this._log = cfg.log ?? (() => { });
 		this._orgOptions = resolveOrgExtensionIndexerOptions(cfg.orgExtensions);
+		this._isExcluded = cfg.respectGitignore === false
+			? buildExcludeMatcherNoGitignore(cfg.excludeGlobs)
+			: buildExcludeMatcher(cfg.workspaceRoot, cfg.excludeGlobs);
+		if (cfg.treeSitter === false) setTreeSitterEnabled(false);
+		else {
+			setTreeSitterEnabled(true);
+			if (typeof cfg.treeSitter === 'object' && cfg.treeSitter.wasmDir) setTreeSitterWasmDir(cfg.treeSitter.wasmDir);
+		}
 	}
+
+	/** Load tree-sitter grammars for the given languages; logs once which ones are AST-backed. */
+	private async _prepareParsers(languages: Iterable<string>): Promise<void> {
+		if (this._cfg.treeSitter === false) return;
+		const wanted = [...new Set([...languages].filter(Boolean))];
+		if (!wanted.length) return;
+		const ready = await ensureTreeSitterLanguages(wanted);
+		const key = ready.sort().join(',');
+		if (key !== this._parsersLogged) {
+			this._parsersLogged = key;
+			this._log(ready.length ? `[RiafIndex] tree-sitter grammars ready: ${key}` : '[RiafIndex] tree-sitter unavailable — using regex chunker');
+		}
+	}
+	private _parsersLogged = '';
 
 	/** Open (or create) the index. Loads any existing DB image from `cfg.dbPath`. */
 	static async open(cfg: RiafConfig): Promise<RiafIndex> {
@@ -260,9 +363,29 @@ export class RiafIndex {
 		return this._enqueue(() => this._removeFiles(relPaths));
 	}
 
+	/**
+	 * Recompute data derived from many files — graph metrics / entry flags and the org-extension
+	 * slices touched since the last refresh. Runs automatically (debounced) after `indexFiles` /
+	 * `removeFiles`; call it directly to force the refresh now (tests, "save then ask").
+	 */
+	refreshDerived(): Promise<void> {
+		if (this._derivedTimer) { clearTimeout(this._derivedTimer); this._derivedTimer = null; }
+		const slices = [...this._pendingOrgSlices];
+		const graph = this._pendingGraphMetrics;
+		this._pendingOrgSlices.clear();
+		this._pendingGraphMetrics = false;
+		if (!slices.length && !graph) return this._derivedPromise ?? Promise.resolve();
+		const run = this._enqueue(async () => {
+			if (slices.length) await this._indexOrgExtensions(() => { }, new Set(slices));
+			if (graph) await this._recomputeGraphMetrics();
+		});
+		this._derivedPromise = run.finally(() => { if (this._derivedPromise === run) this._derivedPromise = null; });
+		return run;
+	}
+
 	startWatching(): void {
 		if (this._watcher || this._closed) return;
-		const watcher = new WorkspaceFileWatcher();
+		const watcher = new WorkspaceFileWatcher({ isExcluded: this._isExcluded });
 		watcher.on('changes', (events: FileChangeEvent[]) => {
 			void this._handleWatchEvents(events).catch(err => this._log(`[RiafIndex] watch handling failed: ${String(err)}`));
 		});
@@ -285,8 +408,9 @@ export class RiafIndex {
 		if (!trimmed) return [];
 		const limit = opts.limit ?? 10;
 		const fetchLimit = opts.filePathPrefix ? limit * 4 : limit;
-		const queryEmbedding = this._embedder ? await this._embedder.embedText(trimmed) : null;
-		const rows = await this._db.searchChunksHybrid(this._hash, trimmed, queryEmbedding, fetchLimit, opts.maxChars ?? Infinity);
+		const queryEmbedding = this._embedder ? await this._embedQuery(trimmed) : null;
+		const vectorHits = queryEmbedding ? await this._vectorTopK(queryEmbedding, fetchLimit * 2) : null;
+		const rows = await this._db.searchChunksHybrid(this._hash, trimmed, vectorHits, fetchLimit, opts.maxChars ?? Infinity);
 		return this._toChunkResults(rows, opts, limit);
 	}
 
@@ -338,11 +462,13 @@ export class RiafIndex {
 		try {
 			tests = (await this.getTestsForFile(rel)).map(t => t.testFile);
 		} catch { /* ignore */ }
+		const neighborhood = await this.getEditNeighborhood(rel);
 		return {
 			activeFile: rel,
 			relatedFiles,
 			tests,
 			profileText: formatProfileText(profile, { activeFile: rel, relatedFiles, tests }),
+			neighborhood: neighborhood && !/no dependents or dependencies/.test(neighborhood) ? neighborhood : undefined,
 		};
 	}
 
@@ -480,6 +606,27 @@ export class RiafIndex {
 		return stage ? jobs.filter(j => j.stage === stage) : jobs;
 	}
 
+	async getK8sResources(kind?: string): Promise<K8sResource[]> {
+		const all = await this._db.getK8sResources(this._hash);
+		return kind ? all.filter(r => r.kind.toLowerCase() === kind.toLowerCase()) : all;
+	}
+
+	async getSpringEndpoints(serviceName?: string): Promise<SpringEndpoint[]> {
+		const all = await this._db.getSpringEndpoints(this._hash);
+		return serviceName ? all.filter(e => e.serviceName === serviceName) : all;
+	}
+
+	// ── agentic search (grep / glob, same exclusions as the index) ──────────
+
+	grep(pattern: string, options: Omit<GrepOptions, 'isExcluded'> = {}): Promise<GrepResult> {
+		const rgCandidates = options.rgCandidates ?? (this._cfg.ripgrepPath ? [this._cfg.ripgrepPath] : undefined);
+		return grepWorkspace(this._root, pattern, { ...options, isExcluded: this._isExcluded, rgCandidates });
+	}
+
+	glob(pattern: string, options: Omit<GlobOptions, 'isExcluded'> = {}): { files: string[]; truncated: boolean } {
+		return globWorkspace(this._root, pattern, { ...options, isExcluded: this._isExcluded });
+	}
+
 	// ── git ──────────────────────────────────────────────────────────────────
 
 	getGitDiffStat(): Promise<string | null> {
@@ -488,6 +635,14 @@ export class RiafIndex {
 
 	getGitRecentlyChanged(limit = 20): Promise<GitFileStats[]> {
 		return getRecentlyChangedFiles(this._root, limit);
+	}
+
+	/** Branch, short status, recent log and diff stat in one call (empty strings when not a git repo). */
+	async getGitContext(logCount = 10): Promise<{ branch: string; status: string; log: string; diffStat: string | null }> {
+		const [branch, status, log, diffStat] = await Promise.all([
+			getGitBranch(this._root), getGitStatus(this._root), getGitLog(this._root, logCount), getGitDiffStat(this._root),
+		]);
+		return { branch, status, log, diffStat };
 	}
 
 	// ── lifecycle ────────────────────────────────────────────────────────────
@@ -499,10 +654,58 @@ export class RiafIndex {
 
 	async close(): Promise<void> {
 		if (this._closed) return;
-		this._closed = true;
 		this.stopWatching();
+		if (this._derivedTimer) { clearTimeout(this._derivedTimer); this._derivedTimer = null; }
+		// finish any pending derived refresh so the persisted image is consistent
+		try { await this.refreshDerived(); } catch { /* reported via log */ }
+		this._closed = true;
 		try { await this._queue; } catch { /* already reported */ }
 		await this._db.close();
+	}
+
+	private _scheduleDerived(slices: Iterable<OrgSlice>, graph: boolean): void {
+		for (const s of slices) this._pendingOrgSlices.add(s);
+		if (graph) this._pendingGraphMetrics = true;
+		if (!this._pendingOrgSlices.size && !this._pendingGraphMetrics) return;
+		if (this._derivedTimer) clearTimeout(this._derivedTimer);
+		const t = setTimeout(() => {
+			this._derivedTimer = null;
+			void this.refreshDerived().catch(err => this._log(`[RiafIndex] derived refresh failed: ${String(err)}`));
+		}, this._cfg.derivedRefreshDebounceMs ?? 1500);
+		(t as { unref?: () => void }).unref?.();
+		this._derivedTimer = t;
+	}
+
+	/** Recompute entry flags, in-degrees and metrics from the stored graph (after incremental edits). */
+	private async _recomputeGraphMetrics(): Promise<void> {
+		const { nodes, edges } = await this._db.getUCGGraph(this._hash);
+		const inDegree = new Map<string, number>();
+		for (const e of edges) if (e.resolvedFile) inDegree.set(e.resolvedFile, (inDegree.get(e.resolvedFile) ?? 0) + 1);
+		let entryChanged = false;
+		for (const n of nodes) {
+			const inDeg = inDegree.get(n.filePath) ?? 0;
+			const entry = isEntryPoint(n.filePath, '', inDeg);
+			if (entry !== n.isEntryPoint || inDeg !== n.importedByCount) {
+				entryChanged = true;
+				n.isEntryPoint = entry;
+				n.importedByCount = inDeg;
+				await this._db.upsertUCGNode(this._hash, n);
+			}
+		}
+		const metrics = computeMetrics(nodes, edges.map(e => ({ ...e, edgeType: e.edgeType as ImportEdge['edgeType'] })));
+		await this._db.upsertUCGMetrics(this._hash, {
+			totalNodes: metrics.totalNodes,
+			totalEdges: metrics.totalEdges,
+			entryCount: metrics.entryPoints.length,
+			cycleCount: metrics.cycleCount,
+			cycles: metrics.cycles,
+			hotFiles: metrics.hotFiles,
+			externalDeps: Object.fromEntries(metrics.externalDeps),
+			maxDepth: metrics.maxDepth,
+			orphanFiles: metrics.orphanFiles,
+			computedAt: Date.now(),
+		});
+		if (entryChanged) this._log('[RiafIndex] graph entry flags refreshed');
 	}
 
 	// ── implementation ───────────────────────────────────────────────────────
@@ -560,7 +763,7 @@ export class RiafIndex {
 		try {
 			// 1. scan
 			progress('scan', 0, 1);
-			const scan = scanWorkspace(this._root, { excludeGlobs: this._cfg.excludeGlobs });
+			const scan = scanWorkspace(this._root, { excludeGlobs: this._cfg.excludeGlobs, respectGitignore: this._cfg.respectGitignore });
 			const commands = detectCommands(this._root);
 			let profile: WorkspaceProfile = {
 				workspaceRoot: this._root,
@@ -629,7 +832,8 @@ export class RiafIndex {
 		progress: (phase: string, done: number, total: number, message?: string) => void,
 	): Promise<void> {
 		const indexable = fileMeta.filter(f => f.language && !SKIP_LANGUAGES.has(f.language));
-		const stored = force ? new Map<string, string>() : await this._db.getChunkFileHashes(this._hash);
+		await this._prepareParsers(indexable.flatMap(f => f.language ? [f.language === 'TypeScript' && /\.tsx$/i.test(f.filePath) ? 'TSX' : f.language] : []));
+		const stored = force ? new Map<string, ChunkLedgerEntry>() : await this._db.getChunkFileLedger(this._hash);
 		if (force) {
 			await this._db.replaceChunks(this._hash, []);
 			for (const p of (await this._db.getChunkFileHashes(this._hash)).keys()) {
@@ -644,12 +848,12 @@ export class RiafIndex {
 
 		for (const file of indexable) {
 			const absPath = join(this._root, file.filePath);
-			const storedHash = stored.get(file.filePath);
+			const ledger = stored.get(file.filePath);
 			const stat = await fs.stat(absPath).catch(() => null);
 			if (!stat) {
 				await this._db.upsertChunkFileHash(this._hash, file.filePath, 'UNREADABLE');
-			} else if (storedHash && storedHash !== 'UNREADABLE' && stat.mtimeMs === file.lastModified && stat.size === file.sizeBytes) {
-				// unchanged since the scan and already in the ledger
+			} else if (ledger && ledger.contentHash !== 'UNREADABLE' && ledger.mtimeMs === stat.mtimeMs && ledger.sizeBytes === stat.size) {
+				// the ledger remembers the stat its hash was computed from — unchanged, skip the read
 			} else {
 				let content: string | null = null;
 				try { content = await fs.readFile(absPath, 'utf8'); } catch { /* unreadable */ }
@@ -657,14 +861,16 @@ export class RiafIndex {
 					await this._db.upsertChunkFileHash(this._hash, file.filePath, 'UNREADABLE');
 				} else {
 					const current = contentHash(content);
-					if (storedHash !== current) {
+					const fileStat = { mtimeMs: stat.mtimeMs, sizeBytes: stat.size };
+					if (ledger?.contentHash !== current) {
 						const chunks = chunkFile(this._hash, file.filePath, content, file.language);
 						await this._db.replaceChunksForFile(this._hash, file.filePath, chunks);
-						await this._db.upsertChunkFileHash(this._hash, file.filePath, current);
-						if (this._embedder) await this._db.deleteChunkEmbeddingsForFile(this._hash, file.filePath);
+						if (this._embedder) await this._dropEmbeddingsForFile(file.filePath);
 						updated++;
 						totalChunks += chunks.length;
 					}
+					// same content, new stat (touch / checkout): just refresh the ledger
+					await this._db.upsertChunkFileHash(this._hash, file.filePath, current, fileStat);
 				}
 			}
 			if (++processed % 50 === 0) {
@@ -679,7 +885,7 @@ export class RiafIndex {
 			if (!currentPaths.has(storedPath)) {
 				await this._db.replaceChunksForFile(this._hash, storedPath, []);
 				await this._db.deleteChunkFileHash(this._hash, storedPath);
-				await this._db.deleteChunkEmbeddingsForFile(this._hash, storedPath);
+				await this._dropEmbeddingsForFile(storedPath);
 			}
 		}
 		progress('chunks', indexable.length, indexable.length, updated > 0 ? `${updated} files → ${totalChunks} chunks` : 'up to date');
@@ -700,7 +906,8 @@ export class RiafIndex {
 		for (const file of candidates) {
 			let content: string;
 			try { content = await fs.readFile(join(this._root, file.filePath), 'utf8'); } catch { continue; }
-			const current = contentHash(content);
+			// the extractor mode is part of the fingerprint: symbols are re-extracted once a grammar becomes available
+			const current = symbolFingerprint(content, file.language, file.filePath);
 			if (storedHashes.get(file.filePath) !== current) {
 				const symbols = extractSymbolsFromFile(this._hash, file.filePath, content, file.language);
 				await this._db.replaceSymbolsForFile(this._hash, file.filePath, symbols);
@@ -715,56 +922,99 @@ export class RiafIndex {
 		progress('symbols', candidates.length, candidates.length, `${indexed} files re-extracted`);
 	}
 
-	private async _indexOrgExtensions(progress: (phase: string, done: number, total: number, message?: string) => void): Promise<number> {
-		const steps = 8;
+	/**
+	 * Run the org-extension indexers — all of them on a full reindex, or only the `slices` affected
+	 * by changed files on an incremental refresh. Each indexer is isolated: one failing does not
+	 * stop the others.
+	 */
+	private async _indexOrgExtensions(
+		progress: (phase: string, done: number, total: number, message?: string) => void,
+		slices?: ReadonlySet<OrgSlice>,
+	): Promise<number> {
+		const want = (s: OrgSlice) => !slices || slices.has(s);
+		const steps = slices ? slices.size : 8;
 		let done = 0;
-		let configFileCount = 0;
+		let configFileCount = this._configFileCount;
 		const step = (label: string) => progress('org-extensions', ++done, steps, label);
-		try {
+		const run = async (slice: OrgSlice, fn: () => Promise<string>) => {
+			if (!want(slice)) return;
+			try { step(await fn()); } catch (err) {
+				this._log(`[RiafIndex] org-extension indexer '${slice}' failed: ${String(err)}`);
+				step(`${slice}: failed`);
+			}
+		};
+		await run('spring', async () => {
 			const java = indexAllSpringServices(this._root);
 			await this._db.replaceSpringEndpoints(this._hash, java.endpoints);
 			await this._db.replaceFeignClients(this._hash, java.feignClients);
-			step(`spring: ${java.endpoints.length} endpoints`);
-
+			return `spring: ${java.endpoints.length} endpoints`;
+		});
+		await run('maven', async () => {
 			const maven = await indexMavenDependencies(this._root);
 			await this._db.replaceMavenDependencies(this._hash, maven.deps);
-			step(`maven: ${maven.pomCount} poms`);
-
+			return `maven: ${maven.pomCount} poms`;
+		});
+		await run('k8s', async () => {
 			const k8s = indexKubernetesManifests(this._root);
 			await this._db.replaceK8sResources(this._hash, k8s);
-			step(`k8s: ${k8s.length} resources`);
-
+			return `k8s: ${k8s.length} resources`;
+		});
+		await run('gateway', async () => {
 			const routes = indexGatewayRoutes(this._root);
 			await this._db.replaceGatewayRoutes(this._hash, routes);
-			step(`gateway: ${routes.length} routes`);
-
+			return `gateway: ${routes.length} routes`;
+		});
+		await run('npm', async () => {
 			const npm = indexNpmDependencies(this._root, [...this._orgOptions.npmScopes]);
 			await this._db.replaceNpmEdges(this._hash, npm.edges);
-			step(`npm: ${npm.edges.length} edges`);
-
+			return `npm: ${npm.edges.length} edges`;
+		});
+		await run('config', async () => {
 			const config = indexConfigEnvironments(this._root, { configServerDirs: this._orgOptions.configServerDirs });
 			configFileCount = config.fileCount;
 			await this._db.replaceConfigDrift(this._hash, config.envDrift);
-			step(`config: ${config.envDrift.length} drifts`);
-
+			return `config: ${config.envDrift.length} drifts`;
+		});
+		await run('terraform', async () => {
 			const tf = indexTerraformResources(this._root);
 			await this._db.replaceTerraformIndex(this._hash, tf);
-			step(`terraform: ${tf.resources.length} resources`);
-
+			return `terraform: ${tf.resources.length} resources`;
+		});
+		await run('ci', async () => {
 			const ci = indexGitlabPipelines(this._root);
 			await this._db.replacePipelineIndex(this._hash, ci);
-			step(`ci: ${ci.jobs.length} jobs`);
-		} catch (err) {
-			this._log(`[RiafIndex] org-extension indexing failed: ${String(err)}`);
-			progress('org-extensions', steps, steps, 'failed (partial)');
-		}
+			return `ci: ${ci.jobs.length} jobs`;
+		});
+		this._configFileCount = configFileCount;
 		return configFileCount;
 	}
 
-	private _buildNodeAndEdges(relPath: string, content: string, language: string): { node: UCGFileNode; edges: UCGImportEdge[] } {
+	/** Compiler-like module resolver over the indexed file set (lazy; rebuilt on full reindex). */
+	private async _getResolver(): Promise<ModuleResolver> {
+		if (!this._resolver) {
+			const files = await this._db.getFileMetadata(this._hash);
+			this._resolver = createModuleResolver(this._root, files.map(f => f.filePath));
+		}
+		return this._resolver;
+	}
+
+	/** Re-resolve dangling internal edges — a newly created file may be what they were pointing at. */
+	private async _reresolveDanglingEdges(resolver: ModuleResolver): Promise<boolean> {
+		const dangling = await this._db.getUnresolvedEdges(this._hash);
+		let changed = false;
+		for (const e of dangling) {
+			const lang = detectLanguageForPath(e.fromFile);
+			if (!lang) continue;
+			const r = resolver.resolve(e.fromFile, e.toModule, lang);
+			if (r.resolvedFile) { await this._db.setEdgeResolution(this._hash, e.fromFile, e.toModule, r.resolvedFile); changed = true; }
+		}
+		return changed;
+	}
+
+	private _buildNodeAndEdges(relPath: string, content: string, language: string, resolver?: ModuleResolver): { node: UCGFileNode; edges: UCGImportEdge[]; imports: ImportEdge[] } {
 		const normalizedPath = normalisePath(relPath);
 		const classification = classifyNode(normalizedPath, content);
-		const imports = extractImports(join(this._root, relPath), content, language, this._root);
+		const imports = extractImports(join(this._root, relPath), content, language, this._root, resolver);
 		const node: UCGFileNode = {
 			filePath: normalizedPath,
 			language,
@@ -781,7 +1031,7 @@ export class RiafIndex {
 			isExternal: imp.isExternal,
 			edgeType: imp.edgeType,
 		}));
-		return { node, edges };
+		return { node, edges, imports };
 	}
 
 	private async _indexGraph(
@@ -792,20 +1042,30 @@ export class RiafIndex {
 		const candidates = fileMeta.filter(f => f.language && !SKIP_LANGUAGES.has(f.language));
 		const allNodes: UCGFileNode[] = [];
 		const allEdges: UCGImportEdge[] = [];
+		const allSymbolEdges: SymbolEdge[] = [];
 		let processed = 0;
 		progress('graph', 0, candidates.length);
+		const resolver = createModuleResolver(this._root, fileMeta.map(f => f.filePath));
+		this._resolver = resolver;
+		const definers = await this._db.getSymbolDefinerIndex(this._hash);
+		const resolveDef = makeDefinitionResolver(definers);
 
 		for (const meta of candidates) {
 			let content: string;
 			try { content = await fs.readFile(join(this._root, meta.filePath), 'utf8'); } catch { continue; }
-			const { node, edges } = this._buildNodeAndEdges(meta.filePath, content, meta.language!);
+			const { node, edges, imports } = this._buildNodeAndEdges(meta.filePath, content, meta.language!, resolver);
 			allNodes.push(node);
 			allEdges.push(...edges);
+			if (supportsSymbolExtraction(meta.language!)) {
+				const symbols = await this._db.getFileOutline(this._hash, node.filePath);
+				allSymbolEdges.push(...extractSymbolEdges({ filePath: node.filePath, content, language: meta.language!, symbols, importEdges: imports, resolve: resolveDef }));
+			}
 			if (++processed % 100 === 0) {
 				progress('graph', processed, candidates.length);
 				await yieldToEventLoop();
 			}
 		}
+		await this._db.replaceAllSymbolEdges(this._hash, allSymbolEdges);
 
 		const inDegree = new Map<string, number>();
 		for (const e of allEdges) {
@@ -828,49 +1088,220 @@ export class RiafIndex {
 			cycles: metrics.cycles,
 			hotFiles: metrics.hotFiles,
 			externalDeps: Object.fromEntries(metrics.externalDeps),
+			maxDepth: metrics.maxDepth,
+			orphanFiles: metrics.orphanFiles,
 			computedAt: Date.now(),
 		});
-		progress('graph', candidates.length, candidates.length, `${allNodes.length} nodes, ${allEdges.length} edges in ${Date.now() - started}ms`);
+		progress('graph', candidates.length, candidates.length, `${allNodes.length} nodes, ${allEdges.length} edges, ${allSymbolEdges.length} symbol edges in ${Date.now() - started}ms`);
+	}
+
+	/** Symbol edges for one file, resolved against the current symbol table (incremental path). */
+	private async _refreshSymbolEdgesForFile(rel: string, content: string, language: string, imports: ImportEdge[]): Promise<void> {
+		if (!supportsSymbolExtraction(language)) return;
+		const symbols = await this._db.getFileOutline(this._hash, rel);
+		const cache = new Map<string, string[]>();
+		const lookup = async (name: string) => {
+			if (!cache.has(name)) cache.set(name, [...new Set((await this._db.getSymbolsByName(this._hash, name)).map(s => s.filePath))]);
+			return cache.get(name)!;
+		};
+		// pre-warm the lookup for every candidate identifier so the extractor can stay synchronous
+		const idents = new Set<string>();
+		for (const m of maskSource(content, language).matchAll(/(?<![\w$])([A-Za-z_$][\w$]*)\s*\(/g)) idents.add(m[1]);
+		for (const m of content.matchAll(/\b(?:extends|implements|import|use|from)\b[^\n]*/g)) for (const w of m[0].match(/[A-Za-z_$][\w$]+/g) ?? []) idents.add(w);
+		const definers = new Map<string, string[]>();
+		for (const id of idents) definers.set(id, await lookup(id));
+		const edges = extractSymbolEdges({ filePath: rel, content, language, symbols, importEdges: imports, resolve: makeDefinitionResolver(definers) });
+		await this._db.replaceSymbolEdgesForFile(this._hash, rel, edges);
+		// a (re)created file may be the definer that dangling edges in other files were waiting for
+		await this._db.reresolveSymbolEdgesTo(this._hash, rel, symbols.map(s => s.name.includes('.') ? s.name.split('.').pop()! : s.name));
+	}
+
+	// ── symbol graph queries ─────────────────────────────────────────────────
+
+	/**
+	 * Who references a symbol: its definitions plus every call / instantiation / extends /
+	 * implements / import edge that targets it. `filePath` narrows to the definition in one file.
+	 */
+	async findReferences(name: string, options: { filePath?: string; limit?: number } = {}): Promise<{ definitions: ExtractedSymbol[]; references: SymbolEdge[] }> {
+		const simple = name.includes('.') ? name.split('.').pop()! : name;
+		const file = options.filePath ? this._toRelative(options.filePath) : undefined;
+		const definitions = await this._db.getSymbolsByName(this._hash, simple, file);
+		const target = file ?? (definitions.length === 1 || new Set(definitions.map(d => d.filePath)).size === 1 ? definitions[0]?.filePath : undefined);
+		let references = await this._db.getSymbolEdgesTo(this._hash, target ?? null, simple, options.limit ?? 200);
+		if (!target) references = references.filter(e => e.toFile === null || definitions.some(d => d.filePath === e.toFile) || definitions.length === 0);
+		return { definitions, references };
+	}
+
+	/** One-hop neighbourhood of a file (or of one symbol in it). */
+	async getNeighbors(filePath: string, symbol?: string): Promise<SymbolNeighborhood> {
+		const rel = this._toRelative(filePath);
+		const simple = symbol?.includes('.') ? symbol.split('.').pop()! : symbol;
+		const [inbound, outbound, graph] = await Promise.all([
+			this._db.getSymbolEdgesTo(this._hash, rel, simple),
+			this._db.getSymbolEdgesFrom(this._hash, rel, simple),
+			this.getImportGraph(rel, 'both').catch(() => ({ imports: [], importedBy: [], externalDeps: [] })),
+		]);
+		return { filePath: rel, symbol: simple, inbound, outbound, imports: graph.imports, importedBy: graph.importedBy };
+	}
+
+	/** Prompt-ready text: callers and callees the agent should know before editing `filePath`. */
+	async getEditNeighborhood(filePath: string, maxChars = 1_800): Promise<string> {
+		try { return formatNeighborhood(await this.getNeighbors(filePath), maxChars); } catch { return ''; }
+	}
+
+	// ── embeddings: text preparation, content-addressed cache, ANN index ──────
+
+	/** Text sent to the embedding model: a path header for context, then the chunk (capped). */
+	private _embedText(filePath: string, chunkText: string): string {
+		const cap = this._cfg.embeddings?.maxChars ?? EMBED_TEXT_CHARS;
+		const header = `// ${filePath}\n`;
+		return header + chunkText.slice(0, Math.max(64, cap - header.length));
+	}
+
+	private get _embedModel(): string { return this._cfg.embeddings?.model ?? 'default'; }
+
+	/** Query embeddings go through the same content-addressed cache (agents repeat searches a lot). */
+	private async _embedQuery(text: string): Promise<EmbeddingVector | null> {
+		if (!this._embedder) return null;
+		const h = contentHash(`q\u0000${text}`);
+		const cached = this._queryCache.get(h);
+		if (cached) return cached;
+		const fromDb = (await this._db.getCachedEmbeddings(this._embedModel, [h])).get(h);
+		if (fromDb) { this._queryCache.set(h, fromDb); return fromDb; }
+		const vec = await this._embedder.embedText(text);
+		if (vec) {
+			this._queryCache.set(h, vec);
+			if (this._queryCache.size > 256) this._queryCache.delete(this._queryCache.keys().next().value!);
+			await this._db.putCachedEmbeddings(this._embedModel, [{ textHash: h, embedding: vec }]);
+		}
+		return vec;
+	}
+	private readonly _queryCache = new Map<string, EmbeddingVector>();
+
+	/**
+	 * Embed `rows`, serving repeats from the content-addressed cache and only sending misses to
+	 * the endpoint. Returns the vectors aligned with `rows` (an entry is `undefined` when the
+	 * endpoint failed before reaching it) plus how many came from the cache.
+	 */
+	private async _embedRows(rows: { file_path: string; start_line: number; chunk_text: string }[]): Promise<{ vectors: (EmbeddingVector | undefined)[]; cached: number; endpointFailed: boolean }> {
+		const texts = rows.map(r => this._embedText(r.file_path, r.chunk_text));
+		const hashes = texts.map(t => contentHash(t));
+		const cache = await this._db.getCachedEmbeddings(this._embedModel, [...new Set(hashes)]);
+		const vectors: (EmbeddingVector | undefined)[] = hashes.map(h => cache.get(h));
+		const missIdx = vectors.flatMap((v, i) => v ? [] : [i]);
+		// de-duplicate identical texts inside the batch
+		const uniqueMiss = new Map<string, number[]>();
+		for (const i of missIdx) (uniqueMiss.get(hashes[i]) ?? uniqueMiss.set(hashes[i], []).get(hashes[i])!).push(i);
+		let endpointFailed = false;
+		if (uniqueMiss.size) {
+			const order = [...uniqueMiss.keys()];
+			const got = await this._embedder!.embedTexts(order.map(h => texts[uniqueMiss.get(h)![0]]));
+			if (!got) endpointFailed = true;
+			else {
+				if (got.length < order.length) endpointFailed = true;
+				const toCache: { textHash: string; embedding: EmbeddingVector }[] = [];
+				got.forEach((vec, k) => {
+					if (!vec) return;
+					const h = order[k];
+					for (const i of uniqueMiss.get(h)!) vectors[i] = vec;
+					toCache.push({ textHash: h, embedding: vec });
+				});
+				await this._db.putCachedEmbeddings(this._embedModel, toCache);
+			}
+		}
+		return { vectors, cached: rows.length - missIdx.length, endpointFailed };
+	}
+
+	private async _storeEmbedding(filePath: string, startLine: number, vec: EmbeddingVector): Promise<void> {
+		await this._db.upsertChunkEmbedding(this._hash, filePath, startLine, vec);
+		this._vectorIndex?.add(this._vectorId(filePath, startLine), vec);
+	}
+
+	private async _dropEmbeddingsForFile(filePath: string): Promise<void> {
+		await this._db.deleteChunkEmbeddingsForFile(this._hash, filePath);
+		if (this._vectorIndex) {
+			for (const [key, id] of this._vectorIds) {
+				if (key.startsWith(`${filePath}:`)) { this._vectorIndex.remove(id); this._vectorIds.delete(key); this._vectorKeys.delete(id); }
+			}
+		}
+	}
+
+	private _vectorId(filePath: string, startLine: number): number {
+		const key = `${filePath}:${startLine}`;
+		let id = this._vectorIds.get(key);
+		if (id === undefined) { id = this._nextVectorId++; this._vectorIds.set(key, id); this._vectorKeys.set(id, { filePath, startLine }); }
+		return id;
+	}
+
+	/** Build the ANN index from the stored embeddings (once; later updates are incremental). */
+	private async _ensureVectorIndex(): Promise<HnswIndex | null> {
+		if (!this._embedder) return null;
+		if (this._vectorIndex) return this._vectorIndex;
+		if (!this._vectorIndexBuild) {
+			this._vectorIndexBuild = (async () => {
+				const started = Date.now();
+				const rows = await this._db.getAllChunkEmbeddings(this._hash);
+				const idx = new HnswIndex(this._cfg.vectorIndex);
+				this._vectorIds.clear(); this._vectorKeys.clear(); this._nextVectorId = 1;
+				for (const r of rows) idx.add(this._vectorId(r.file_path, r.start_line), r.embedding);
+				this._vectorIndex = idx;
+				this._log(`[RiafIndex] vector index built: ${idx.size} vectors in ${Date.now() - started}ms`);
+			})().finally(() => { this._vectorIndexBuild = null; });
+		}
+		await this._vectorIndexBuild;
+		return this._vectorIndex;
+	}
+
+	/** Top-k chunks by cosine similarity from the ANN index (compacting it when many deletes accumulated). */
+	private async _vectorTopK(query: EmbeddingVector, k: number): Promise<{ filePath: string; startLine: number; score: number }[]> {
+		const idx = await this._ensureVectorIndex();
+		if (!idx || idx.size === 0) return [];
+		if (idx.deletedRatio > 0.25 && idx.size > 100) idx.rebuild();
+		return idx.search(query, k).flatMap(h => { const key = this._vectorKeys.get(h.id); return key ? [{ ...key, score: h.score }] : []; });
 	}
 
 	private async _indexEmbeddings(progress: (phase: string, done: number, total: number, message?: string) => void): Promise<void> {
 		if (!this._embedder) return;
 		const total = await this._db.getChunkCount(this._hash);
 		let done = 0;
+		let cachedTotal = 0;
 		progress('embeddings', 0, total);
 		// Loop until no chunk is missing an embedding (or the endpoint goes away).
 		for (; ;) {
 			const rows = await this._db.getChunksWithoutEmbeddings(this._hash, EMBEDDING_BATCH);
 			if (rows.length === 0) break;
-			const embeddings = await this._embedder.embedTexts(rows.map(r => r.chunk_text.slice(0, EMBED_TEXT_CHARS)));
-			if (!embeddings) {
+			const { vectors, cached, endpointFailed } = await this._embedRows(rows);
+			cachedTotal += cached;
+			let stored = 0;
+			for (let i = 0; i < rows.length; i++) {
+				if (vectors[i]) { await this._storeEmbedding(rows[i].file_path, rows[i].start_line, vectors[i]!); stored++; }
+			}
+			done += stored;
+			if (stored === 0) {
 				this._log('[RiafIndex] embedding endpoint unavailable — continuing with BM25 only');
 				progress('embeddings', done, total, 'endpoint unavailable');
 				return;
 			}
-			for (let i = 0; i < rows.length; i++) {
-				if (embeddings[i]) {
-					await this._db.upsertChunkEmbedding(this._hash, rows[i].file_path, rows[i].start_line, embeddings[i]);
-				}
+			if (endpointFailed || stored < rows.length) {
+				// the embedder gave up part-way (outage); what we have is persisted — the next pass resumes here
+				this._log(`[RiafIndex] embedding endpoint failed mid-batch — ${done}/${total} chunks embedded, will resume on the next pass`);
+				progress('embeddings', done, total, 'endpoint unavailable');
+				return;
 			}
-			done += rows.length;
 			progress('embeddings', Math.min(done, total), total);
 			await yieldToEventLoop();
 		}
-		progress('embeddings', total, total);
+		progress('embeddings', total, total, cachedTotal ? `${cachedTotal} from cache` : undefined);
 	}
 
 	private async _embedFile(relPath: string): Promise<void> {
 		if (!this._embedder) return;
 		const rows = await this._db.getChunksForFile(this._hash, relPath);
-		await this._db.deleteChunkEmbeddingsForFile(this._hash, relPath);
+		await this._dropEmbeddingsForFile(relPath);
 		if (rows.length === 0) return;
-		const embeddings = await this._embedder.embedTexts(rows.map(r => r.chunk_text.slice(0, EMBED_TEXT_CHARS)));
-		if (!embeddings) return;
+		const { vectors } = await this._embedRows(rows);
 		for (let i = 0; i < rows.length; i++) {
-			if (embeddings[i]) {
-				await this._db.upsertChunkEmbedding(this._hash, rows[i].file_path, rows[i].start_line, embeddings[i]);
-			}
+			if (vectors[i]) await this._storeEmbedding(rows[i].file_path, rows[i].start_line, vectors[i]!);
 		}
 	}
 
@@ -896,9 +1327,14 @@ export class RiafIndex {
 
 	private async _indexFiles(relPaths: string[]): Promise<void> {
 		let touchedGraph = false;
+		let newFiles = false;
+		const orgSlices = new Set<OrgSlice>();
+		const resolver = await this._getResolver();
 		for (const raw of relPaths) {
 			const rel = this._toRelative(raw);
 			if (!rel) continue;
+			if (this._isExcluded(rel)) continue;
+			for (const s of orgSlicesForPath(rel)) orgSlices.add(s);
 			const language = detectLanguageForPath(rel);
 			const absPath = join(this._root, rel);
 			const stat = await fs.stat(absPath).catch(() => null);
@@ -906,6 +1342,7 @@ export class RiafIndex {
 				await this._removeFiles([rel]);
 				continue;
 			}
+			if (!resolver.hasFile(rel)) { resolver.addFile(rel); newFiles = true; }
 
 			await this._db.upsertFileMetadata(this._hash, {
 				filePath: rel,
@@ -920,51 +1357,66 @@ export class RiafIndex {
 			try { content = await fs.readFile(absPath, 'utf8'); } catch { continue; }
 			const current = contentHash(content);
 			const stored = await this._db.getChunkFileHash(this._hash, rel);
-			if (stored === current) continue;
+			if (stored === current) {
+				await this._db.upsertChunkFileHash(this._hash, rel, current, { mtimeMs: stat.mtimeMs, sizeBytes: stat.size });
+				continue;
+			}
 
+			await this._prepareParsers([grammarLanguageFor(language, rel) ?? language]);
 			const chunks = chunkFile(this._hash, rel, content, language);
 			await this._db.replaceChunksForFile(this._hash, rel, chunks);
-			await this._db.upsertChunkFileHash(this._hash, rel, current);
+			await this._db.upsertChunkFileHash(this._hash, rel, current, { mtimeMs: stat.mtimeMs, sizeBytes: stat.size });
 
 			if (supportsSymbolExtraction(language)) {
 				await this._db.replaceSymbolsForFile(this._hash, rel, extractSymbolsFromFile(this._hash, rel, content, language));
-				await this._db.upsertFileHash(this._hash, rel, current);
+				await this._db.upsertFileHash(this._hash, rel, symbolFingerprint(content, language, rel));
 			}
 
-			const { node, edges } = this._buildNodeAndEdges(rel, content, language);
+			const { node, edges, imports } = this._buildNodeAndEdges(rel, content, language, resolver);
 			const importers = await this._db.getImportEdgesTo(this._hash, node.filePath);
 			node.importedByCount = importers.length;
 			node.isEntryPoint = isEntryPoint(node.filePath, '', importers.length);
 			await this._db.upsertUCGNode(this._hash, node);
 			await this._db.replaceUCGEdgesForFile(this._hash, node.filePath, edges);
+			await this._refreshSymbolEdgesForFile(rel, content, language, imports);
 			touchedGraph = true;
 
 			await this._embedFile(rel);
 		}
+		if (newFiles && await this._reresolveDanglingEdges(resolver)) touchedGraph = true;
 		if (touchedGraph) await this._db.refreshUCGImportedByCounts(this._hash);
+		this._scheduleDerived(orgSlices, touchedGraph);
 		await this._refreshStatus();
 	}
 
 	private async _removeFiles(relPaths: string[]): Promise<void> {
 		let touchedGraph = false;
+		const orgSlices = new Set<OrgSlice>();
 		for (const raw of relPaths) {
 			const rel = this._toRelative(raw);
 			if (!rel) continue;
+			for (const s of orgSlicesForPath(rel)) orgSlices.add(s);
+			this._resolver?.removeFile(rel);
 			await this._db.replaceChunksForFile(this._hash, rel, []);
 			await this._db.deleteChunkFileHash(this._hash, rel);
-			await this._db.deleteChunkEmbeddingsForFile(this._hash, rel);
+			await this._dropEmbeddingsForFile(rel);
 			await this._db.replaceSymbolsForFile(this._hash, rel, []);
 			await this._db.deleteFileMetadata(this._hash, rel);
 			await this._db.deleteUCGNode(this._hash, rel);
 			await this._db.replaceUCGEdgesForFile(this._hash, rel, []);
+			// edges from other files that pointed at the removed file are now dangling
+			await this._db.unresolveEdgesTo(this._hash, rel);
+			await this._db.replaceSymbolEdgesForFile(this._hash, rel, []);
+			await this._db.unresolveSymbolEdgesTo(this._hash, rel);
 			touchedGraph = true;
 		}
 		if (touchedGraph) await this._db.refreshUCGImportedByCounts(this._hash);
+		this._scheduleDerived(orgSlices, touchedGraph);
 		await this._refreshStatus();
 	}
 
 	private async _handleWatchEvents(events: FileChangeEvent[]): Promise<void> {
-		const excluded = compileExcludeGlobs(this._cfg.excludeGlobs);
+		const excluded = this._isExcluded;
 		const removed = events.filter(e => e.type === 'unlink' && !excluded(e.filePath)).map(e => e.filePath);
 		const changed = events.filter(e => e.type !== 'unlink' && !excluded(e.filePath)).map(e => e.filePath);
 		if (removed.length) await this.removeFiles(removed);

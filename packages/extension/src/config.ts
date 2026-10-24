@@ -3,17 +3,25 @@ import * as vscode from 'vscode';
 export type GatewayAuth = 'none' | 'microsoft-sso' | 'github-sso' | 'header';
 
 export interface RiafSettings {
-	index: { autoIndexOnStartup: boolean; watch: boolean; excludeGlobs: string[] };
+	index: { autoIndexOnStartup: boolean; watch: boolean; excludeGlobs: string[]; respectGitignore: boolean; treeSitter: boolean };
 	embeddings: { enabled: boolean; model: string };
 	gateway: {
 		url: string; model: string; auth: GatewayAuth; ssoScopes: string[];
-		headers: Record<string, string>; promptCache: boolean;
+		headers: Record<string, string>; promptCache: boolean; stream: boolean;
 	};
 	agent: {
 		maxIterations: number; maxReadOnlyCalls: number; generatePlan: boolean; autoVerify: boolean;
 		requireEditApproval: boolean; allowRunCommand: boolean; contextWindowRatio: number;
+		diagnosticsAfterEdit: boolean;
+		autoApproveDetectedTestCommand: boolean; preApprovedCommands: string[]; denyCommandPatterns: string[];
+		sandbox: SandboxMode;
+		hooks: { preTool?: HookEntry[]; postEdit?: HookEntry[] };
+		summarizeHistory: boolean; exploreSubagent: boolean; checkpoints: boolean;
 	};
 }
+
+export type SandboxMode = 'auto' | 'policy' | 'seatbelt' | 'off';
+export type HookEntry = { matcher?: string; command: string; timeoutMs?: number };
 
 export function readSettings(): RiafSettings {
 	const c = vscode.workspace.getConfiguration('riaf');
@@ -22,6 +30,8 @@ export function readSettings(): RiafSettings {
 			autoIndexOnStartup: c.get('index.autoIndexOnStartup', true),
 			watch: c.get('index.watch', true),
 			excludeGlobs: c.get<string[]>('index.excludeGlobs', []),
+			respectGitignore: c.get('index.respectGitignore', true),
+			treeSitter: c.get('index.treeSitter', true),
 		},
 		embeddings: {
 			enabled: c.get('embeddings.enabled', false),
@@ -34,6 +44,7 @@ export function readSettings(): RiafSettings {
 			ssoScopes: c.get<string[]>('gateway.ssoScopes', ['openid', 'profile', 'email']),
 			headers: c.get<Record<string, string>>('gateway.headers', {}),
 			promptCache: c.get('gateway.promptCache', true),
+			stream: c.get('gateway.stream', true),
 		},
 		agent: {
 			maxIterations: c.get('agent.maxIterations', 25),
@@ -43,6 +54,15 @@ export function readSettings(): RiafSettings {
 			requireEditApproval: c.get('agent.requireEditApproval', true),
 			allowRunCommand: c.get('agent.allowRunCommand', true),
 			contextWindowRatio: c.get('agent.contextWindowRatio', 0.85),
+			diagnosticsAfterEdit: c.get('agent.diagnosticsAfterEdit', true),
+			autoApproveDetectedTestCommand: c.get('agent.autoApproveDetectedTestCommand', false),
+			preApprovedCommands: c.get<string[]>('agent.preApprovedCommands', []),
+			denyCommandPatterns: c.get<string[]>('agent.denyCommandPatterns', []),
+			sandbox: c.get<SandboxMode>('agent.sandbox', 'auto'),
+			hooks: c.get<{ preTool?: HookEntry[]; postEdit?: HookEntry[] }>('agent.hooks', {}),
+			summarizeHistory: c.get('agent.summarizeHistory', true),
+			exploreSubagent: c.get('agent.exploreSubagent', true),
+			checkpoints: c.get('agent.checkpoints', true),
 		},
 	};
 }

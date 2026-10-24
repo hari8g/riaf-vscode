@@ -170,27 +170,23 @@ export class GatewayTransport implements ModelTransport {
 			wire.unshift({ role: 'system', content: [req.systemMessage, req.volatileSystemMessage ?? ''].filter(Boolean).join('\n\n') });
 		}
 
+		const stream = this._s.gateway.stream !== false;
 		const body = {
 			model: this.modelName,
 			messages: wire,
 			max_tokens: req.maxOutputTokens ?? this.maxOutputTokens,
-			stream: false,
+			stream,
+			...(stream ? { stream_options: { include_usage: true } } : {}),
 			...(req.tools?.length ? { tools: req.tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } })), tool_choice: 'auto' } : {}),
 		};
 		const res = await fetch(`${this._s.gateway.url}/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body), signal: req.signal });
 		if (!res.ok) { throw new Error(`gateway ${res.status}: ${(await res.text()).slice(0, 500)}`); }
-		const json = await res.json() as any;
-		const choice = json.choices?.[0];
-		const text: string = choice?.message?.content ?? '';
-		if (text) { req.onText?.(text); }
-		const toolCalls: ToolCall[] = (choice?.message?.tool_calls ?? []).map((tc: any) => ({
-			id: tc.id, name: tc.function?.name, args: safeJson(tc.function?.arguments),
-		}));
-		const finish = choice?.finish_reason;
-		return {
-			text, toolCalls, usage: usageFromOpenAIResponse(json.usage),
-			stopReason: finish === 'tool_calls' || toolCalls.length ? 'tool_calls' : finish === 'length' ? 'length' : finish === 'stop' ? 'end' : 'other',
-		};
+		const contentType = res.headers.get('content-type') ?? '';
+		if (stream && res.body && contentType.includes('text/event-stream')) {
+			return readOpenAIStream(res.body, req.onText);
+		}
+		// Gateway answered with a plain JSON body (streaming disabled or not supported upstream).
+		return parseOpenAIResponse(await res.json(), req.onText);
 	}
 }
 
@@ -198,6 +194,101 @@ const safeJson = (s: unknown): Record<string, unknown> => {
 	if (typeof s !== 'string') { return (s as Record<string, unknown>) ?? {}; }
 	try { return JSON.parse(s); } catch { return { _raw: s }; }
 };
+
+const stopReasonFrom = (finish: unknown, hasToolCalls: boolean): TransportResult['stopReason'] =>
+	// `length` wins even when tool calls are present: their arguments were cut mid-JSON.
+	finish === 'length' ? 'length'
+		: finish === 'tool_calls' || hasToolCalls ? 'tool_calls'
+			: finish === 'stop' ? 'end' : 'other';
+
+/** Parse a non-streaming OpenAI chat-completions body. */
+export function parseOpenAIResponse(json: any, onText?: (delta: string) => void): TransportResult {
+	const choice = json?.choices?.[0];
+	const text: string = choice?.message?.content ?? '';
+	if (text) { onText?.(text); }
+	const toolCalls: ToolCall[] = (choice?.message?.tool_calls ?? []).map((tc: any) => ({
+		id: tc.id, name: tc.function?.name, args: safeJson(tc.function?.arguments),
+	}));
+	return { text, toolCalls, usage: usageFromOpenAIResponse(json?.usage), stopReason: stopReasonFrom(choice?.finish_reason, toolCalls.length > 0) };
+}
+
+/**
+ * Incremental accumulator for OpenAI-style SSE chat chunks. Text deltas are forwarded to
+ * `onText` as they arrive; tool-call argument fragments are stitched by `index`; the final
+ * `usage` chunk (from `stream_options.include_usage`) is kept.
+ */
+export class OpenAIStreamAccumulator {
+	text = '';
+	finish: unknown = undefined;
+	usage: unknown = undefined;
+	private readonly _tools = new Map<number, { id: string; name: string; args: string }>();
+	private _buffer = '';
+
+	constructor(private readonly _onText?: (delta: string) => void) { }
+
+	/** Feed raw SSE bytes/text; complete `data:` events are consumed, partial lines are kept. */
+	feed(chunk: string): void {
+		this._buffer += chunk;
+		let nl: number;
+		while ((nl = this._buffer.indexOf('\n')) >= 0) {
+			const line = this._buffer.slice(0, nl).replace(/\r$/, '');
+			this._buffer = this._buffer.slice(nl + 1);
+			this._line(line);
+		}
+	}
+
+	/** Flush whatever remains in the buffer (a final event without trailing newline). */
+	end(): void {
+		if (this._buffer.trim()) { this._line(this._buffer); }
+		this._buffer = '';
+	}
+
+	private _line(line: string): void {
+		if (!line.startsWith('data:')) { return; }
+		const payload = line.slice(5).trim();
+		if (!payload || payload === '[DONE]') { return; }
+		let json: any;
+		try { json = JSON.parse(payload); } catch { return; }
+		if (json.usage) { this.usage = json.usage; }
+		const choice = json.choices?.[0];
+		if (!choice) { return; }
+		const delta = choice.delta ?? {};
+		if (typeof delta.content === 'string' && delta.content) {
+			this.text += delta.content;
+			this._onText?.(delta.content);
+		}
+		for (const tc of delta.tool_calls ?? []) {
+			const idx: number = typeof tc.index === 'number' ? tc.index : this._tools.size;
+			let acc = this._tools.get(idx);
+			if (!acc) { acc = { id: '', name: '', args: '' }; this._tools.set(idx, acc); }
+			if (tc.id) { acc.id = tc.id; }
+			if (tc.function?.name) { acc.name = tc.function.name; }
+			if (typeof tc.function?.arguments === 'string') { acc.args += tc.function.arguments; }
+		}
+		if (choice.finish_reason) { this.finish = choice.finish_reason; }
+	}
+
+	result(): TransportResult {
+		const toolCalls: ToolCall[] = [...this._tools.entries()]
+			.sort((a, b) => a[0] - b[0])
+			.map(([i, t]) => ({ id: t.id || `call_${i}`, name: t.name, args: safeJson(t.args) }));
+		return { text: this.text, toolCalls, usage: usageFromOpenAIResponse(this.usage as any), stopReason: stopReasonFrom(this.finish, toolCalls.length > 0) };
+	}
+}
+
+async function readOpenAIStream(body: ReadableStream<Uint8Array>, onText?: (delta: string) => void): Promise<TransportResult> {
+	const acc = new OpenAIStreamAccumulator(onText);
+	const reader = body.getReader();
+	const decoder = new TextDecoder();
+	for (; ;) {
+		const { done, value } = await reader.read();
+		if (done) { break; }
+		acc.feed(decoder.decode(value, { stream: true }));
+	}
+	acc.feed(decoder.decode());
+	acc.end();
+	return acc.result();
+}
 
 /** Pick the transport from settings: gateway if configured, else whatever vscode.lm offers. */
 export async function createTransport(preferred?: vscode.LanguageModelChat): Promise<ModelTransport | undefined> {

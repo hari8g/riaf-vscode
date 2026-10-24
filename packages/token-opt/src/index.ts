@@ -10,6 +10,7 @@ export * from './promptCache.js';
 export * from './contextWindowTrim.js';
 export * from './wireMessageTrim.js';
 export * from './budget.js';
+export * from './threadSummary.js';
 
 // compaction & dedup
 export * from './toolResultCompaction.js';

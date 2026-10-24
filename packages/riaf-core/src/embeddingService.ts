@@ -20,18 +20,26 @@ export interface EmbeddingConfig {
 	url: string;
 	/** Model identifier sent in the request body, e.g. `text-embedding-3-small`. */
 	model: string;
-	/** Extra request headers (e.g. `Authorization`). */
-	headers?: Record<string, string>;
+	/**
+	 * Extra request headers (e.g. `Authorization`). A function is resolved before every request so
+	 * short-lived SSO tokens stay fresh for the lifetime of the index.
+	 */
+	headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
 	/** Per-request timeout; defaults to 10s. */
 	timeoutMs?: number;
 	/** Max texts per HTTP request; defaults to 20. */
 	batchSize?: number;
+	/** Cap on characters per chunk sent to the model (default 6000 ≈ 1500 tokens). */
+	maxChars?: number;
 }
 
 export interface Embedder {
 	/** Embed a single text. Returns null if the endpoint is unavailable. */
 	embedText(text: string): Promise<EmbeddingVector | null>;
-	/** Embed a batch of texts. Returns null if the endpoint is unavailable. */
+	/**
+	 * Embed a batch of texts. Returns null if the endpoint is unavailable from the start; may
+	 * return a strict prefix of the input when the endpoint fails part-way through.
+	 */
 	embedTexts(texts: string[]): Promise<EmbeddingVector[] | null>;
 }
 
@@ -77,10 +85,14 @@ export function createEmbedder(cfg: EmbeddingConfig | undefined): Embedder | und
 
 	const timeoutMs = cfg.timeoutMs ?? REQUEST_TIMEOUT_MS;
 	const batchSize = Math.max(1, cfg.batchSize ?? MAX_TEXTS_PER_BATCH);
-	const headers = { 'Content-Type': 'application/json', ...(cfg.headers ?? {}) };
+	const resolveHeaders = async (): Promise<Record<string, string>> => {
+		const extra = typeof cfg.headers === 'function' ? await cfg.headers() : (cfg.headers ?? {});
+		return { 'Content-Type': 'application/json', ...extra };
+	};
 
 	const embedBatch = async (texts: string[]): Promise<EmbeddingVector[] | null> => {
 		try {
+			const headers = await resolveHeaders();
 			const controller = new AbortController();
 			const timer = setTimeout(() => controller.abort(), timeoutMs);
 			let resp: Response;
@@ -106,12 +118,17 @@ export function createEmbedder(cfg: EmbeddingConfig | undefined): Embedder | und
 		}
 	};
 
+	/**
+	 * Embed many texts in batches. On a mid-way failure the vectors already obtained are returned
+	 * (a strict prefix of the input, so callers can persist them and resume later); `null` only
+	 * when nothing at all could be embedded.
+	 */
 	const embedTexts = async (texts: string[]): Promise<EmbeddingVector[] | null> => {
 		if (texts.length === 0) return [];
 		const all: EmbeddingVector[] = [];
 		for (let i = 0; i < texts.length; i += batchSize) {
 			const batch = await embedBatch(texts.slice(i, i + batchSize));
-			if (batch === null) return null;
+			if (batch === null) return all.length ? all : null;
 			all.push(...batch);
 		}
 		return all;

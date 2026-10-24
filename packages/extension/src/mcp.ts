@@ -12,7 +12,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { RiafIndex, setSqliteModuleLoader } from '@bosch-mps/riaf-core';
+import { RiafIndex, setSqliteModuleLoader, setTreeSitterWasmDir } from '@bosch-mps/riaf-core';
+import { executeOrgTool, executeSearchTool, ORG_TOOL_SPECS, SEARCH_TOOL_SPECS } from './tools/orgTools.js';
+import { executeGraphTool, GRAPH_TOOL_SPECS } from './tools/graphTools.js';
 
 const args = process.argv.slice(2);
 const flag = (n: string): string | undefined => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : undefined; };
@@ -24,6 +26,8 @@ const log = (m: string) => process.stderr.write(`[riaf-mcp] ${m}\n`);
 const here = dirname(fileURLToPath(import.meta.url));
 const wasmEntry = [join(here, 'vendor', 'sqlite-wasm', 'node.mjs'), join(here, '..', '..', '..', 'node_modules', '@sqlite.org', 'sqlite-wasm', 'dist', 'node.mjs')].find(existsSync);
 if (wasmEntry) { setSqliteModuleLoader(() => import(pathToFileURL(wasmEntry).href)); }
+const tsDir = [join(here, 'vendor', 'tree-sitter'), join(here, '..', '..', '..', 'node_modules', '@vscode', 'tree-sitter-wasm', 'wasm')].find(d => existsSync(join(d, 'tree-sitter.wasm')));
+if (tsDir) { setTreeSitterWasmDir(tsDir); }
 
 const index = await RiafIndex.open({ workspaceRoot, dbPath, log });
 if (!index.getStatus().indexed || args.includes('--reindex')) {
@@ -55,6 +59,7 @@ server.tool('get_context_profile', 'Imports, importers and covering tests for a 
 		const p = await index.getContextualProfile(filePath);
 		const lines = [p.profileText];
 		if (p.activeFile) { lines.push(`\nRelated files for ${p.activeFile}:`, ...p.relatedFiles.map(f => `- ${f}`), 'Tests:', ...(p.tests.length ? p.tests.map(t => `- ${t}`) : ['- (none)'])); }
+		if (p.neighborhood) { lines.push('', p.neighborhood); }
 		return text(lines.join('\n'));
 	});
 
@@ -73,6 +78,31 @@ server.tool('get_indexing_report', 'Markdown report of what is indexed (language
 
 server.tool('reindex', 'Rebuild the index (use after large refactors or branch switches).', { force: z.boolean().optional() },
 	async ({ force }) => text(JSON.stringify(await index.reindex({ force: force ?? true }))));
+
+// Search + org-index + git tools: same specs and formatting as the VS Code agent (tools/orgTools.ts).
+const zodFromJsonSchema = (schema: Record<string, unknown>): Record<string, z.ZodTypeAny> => {
+	const props = (schema.properties ?? {}) as Record<string, { type?: string; enum?: string[] }>;
+	const required = new Set((schema.required ?? []) as string[]);
+	const out: Record<string, z.ZodTypeAny> = {};
+	for (const [k, p] of Object.entries(props)) {
+		let t: z.ZodTypeAny = p.enum ? z.enum(p.enum as [string, ...string[]]) : p.type === 'number' ? z.number() : p.type === 'boolean' ? z.boolean() : z.string();
+		if (!required.has(k)) { t = t.optional(); }
+		out[k] = t;
+	}
+	return out;
+};
+for (const spec of SEARCH_TOOL_SPECS) {
+	server.tool(spec.name, spec.description, zodFromJsonSchema(spec.inputSchema),
+		async (args: Record<string, unknown>) => text((await executeSearchTool(index, spec.name, args)) ?? `unknown tool ${spec.name}`));
+}
+for (const spec of GRAPH_TOOL_SPECS) {
+	server.tool(spec.name, spec.description, zodFromJsonSchema(spec.inputSchema),
+		async (args: Record<string, unknown>) => text((await executeGraphTool(index, spec.name, args)) ?? `unknown tool ${spec.name}`));
+}
+for (const spec of ORG_TOOL_SPECS) {
+	server.tool(spec.name, spec.description, zodFromJsonSchema(spec.inputSchema),
+		async (args: Record<string, unknown>) => text((await executeOrgTool(index, spec.name, args)) ?? `unknown tool ${spec.name}`));
+}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

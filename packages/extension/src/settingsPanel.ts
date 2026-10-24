@@ -18,9 +18,12 @@ export type HostResponse = Record<string, unknown>;
 
 /** All `riaf.*` settings that the UI edits — resolved from VS Code configuration. */
 export const SETTING_KEYS = [
-	'index.autoIndexOnStartup', 'index.watch', 'index.excludeGlobs', 'embeddings.enabled', 'embeddings.model',
-	'gateway.url', 'gateway.model', 'gateway.auth', 'gateway.ssoScopes', 'gateway.headers', 'gateway.promptCache',
+	'index.autoIndexOnStartup', 'index.watch', 'index.respectGitignore', 'index.treeSitter', 'index.excludeGlobs',
+	'embeddings.enabled', 'embeddings.model',
+	'gateway.url', 'gateway.model', 'gateway.auth', 'gateway.ssoScopes', 'gateway.headers', 'gateway.promptCache', 'gateway.stream',
 	'agent.maxIterations', 'agent.maxReadOnlyCalls', 'agent.generatePlan', 'agent.autoVerify', 'agent.requireEditApproval', 'agent.allowRunCommand', 'agent.contextWindowRatio',
+	'agent.diagnosticsAfterEdit', 'agent.autoApproveDetectedTestCommand', 'agent.preApprovedCommands', 'agent.denyCommandPatterns',
+	'agent.sandbox', 'agent.hooks', 'agent.summarizeHistory', 'agent.exploreSubagent', 'agent.checkpoints',
 ] as const;
 
 export interface PanelDeps {

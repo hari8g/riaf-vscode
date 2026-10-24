@@ -7,9 +7,15 @@ import { readdirSync, readFileSync, statSync } from 'fs';
 import { extname, join, relative } from 'path';
 import { FileMetadataEntry, FrameworkEntry } from './repoIntelligenceTypes.js';
 
-const SKIP_DIRS = new Set([
+/**
+ * Directories never worth indexing regardless of ignore files. Dot-directories are NOT
+ * skipped wholesale any more — `.github/`, `.vscode/`, `.riaf/` carry workflows and rules the
+ * agent should see; `.gitignore` decides the rest.
+ */
+export const SKIP_DIRS: ReadonlySet<string> = new Set([
 	'node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.venv', '.tox',
-	'.next', '.nuxt', 'coverage', '.cache', 'vendor', 'target', '.gradle',
+	'.next', '.nuxt', 'coverage', '.cache', 'vendor', 'target', '.gradle', '.idea', '.hg', '.svn',
+	'.terraform', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.turbo', '.parcel-cache',
 ]);
 const MAX_DEPTH = 14;
 const MAX_FILES = 50_000;
@@ -122,6 +128,51 @@ export const detectLanguageForPath = (filePath: string): string | null => detect
  * Compile simple gitignore-style globs (`**`, `*`, `?`, trailing `/`) into a matcher
  * over forward-slash relative paths. A pattern without a slash matches at any depth.
  */
+/** Translate one glob body (no leading slash) into a regex fragment: `**`, `*`, `?`, `{a,b}`. */
+const globToRegexSource = (g: string): string => {
+	let re = '';
+	for (let i = 0; i < g.length; i++) {
+		const c = g[i];
+		if (c === '*') {
+			if (g[i + 1] === '*') {
+				i++;
+				if (g[i + 1] === '/') { i++; re += '(?:.*/)?'; } else { re += '.*'; }
+			} else {
+				re += '[^/]*';
+			}
+		} else if (c === '?') {
+			re += '[^/]';
+		} else if (c === '{') {
+			const close = g.indexOf('}', i);
+			if (close > i) {
+				re += `(?:${g.slice(i + 1, close).split(',').map(alt => globToRegexSource(alt)).join('|')})`;
+				i = close;
+			} else {
+				re += '\\{';
+			}
+		} else {
+			re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+		}
+	}
+	return re;
+};
+
+/**
+ * Compile a file-selection glob (`src/**\/*.ts`, `*.test.ts`, `**\/{a,b}.json`) into an exact
+ * path matcher over forward-slash relative paths. Unlike exclude globs it does not match
+ * descendants: `src/*.ts` matches `src/a.ts`, not `src/a.ts/x`. A pattern without a slash
+ * matches at any depth.
+ */
+export const compileFileGlob = (glob: string): ((relPath: string) => boolean) => {
+	let g = glob.trim().replace(/\\/g, '/');
+	if (g.startsWith('./')) g = g.slice(2);
+	if (g.startsWith('/')) g = g.slice(1);
+	if (!g) return () => false;
+	const anchored = g.includes('/');
+	const re = new RegExp(`${anchored ? '^' : '^(?:.*/)?'}${globToRegexSource(g)}$`);
+	return (relPath: string) => re.test(relPath.replace(/\\/g, '/'));
+};
+
 export const compileExcludeGlobs = (globs: readonly string[] | undefined): ((relPath: string) => boolean) => {
 	const regexes: RegExp[] = [];
 	for (const raw of globs ?? []) {
@@ -131,22 +182,7 @@ export const compileExcludeGlobs = (globs: readonly string[] | undefined): ((rel
 		if (dirOnly) g = g.slice(0, -1);
 		if (g.startsWith('/')) g = g.slice(1);
 		const anchored = g.includes('/');
-		let re = '';
-		for (let i = 0; i < g.length; i++) {
-			const c = g[i];
-			if (c === '*') {
-				if (g[i + 1] === '*') {
-					i++;
-					if (g[i + 1] === '/') { i++; re += '(?:.*/)?'; } else { re += '.*'; }
-				} else {
-					re += '[^/]*';
-				}
-			} else if (c === '?') {
-				re += '[^/]';
-			} else {
-				re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-			}
-		}
+		const re = globToRegexSource(g);
 		const prefix = anchored ? '^' : '^(?:.*/)?';
 		// Match the path itself or anything beneath it.
 		regexes.push(new RegExp(`${prefix}${re}(?:/.*)?$`));
@@ -158,9 +194,70 @@ export const compileExcludeGlobs = (globs: readonly string[] | undefined): ((rel
 	};
 };
 
+/**
+ * Compile a list of gitignore lines (in order) into a matcher with `!` negation; the last
+ * matching pattern wins, as in git. `baseDir` (forward-slash, relative, no trailing slash)
+ * scopes a nested `.gitignore` to its own directory.
+ */
+export const compileGitignore = (lines: readonly string[], baseDir = ''): ((relPath: string) => boolean | undefined) => {
+	const rules: { negate: boolean; test: (p: string) => boolean }[] = [];
+	for (const raw of lines) {
+		let line = raw.replace(/\r$/, '');
+		if (!line.trim() || line.trimStart().startsWith('#')) continue;
+		let negate = false;
+		if (line.startsWith('!')) { negate = true; line = line.slice(1); }
+		if (line.startsWith('\\')) line = line.slice(1);
+		line = line.replace(/(?<!\\)\s+$/, '');
+		if (!line) continue;
+		// A nested .gitignore's patterns are relative to that directory.
+		if (baseDir) {
+			const anchored = line.includes('/') && !(line.endsWith('/') && line.indexOf('/') === line.length - 1);
+			line = anchored ? `${baseDir}/${line.replace(/^\//, '')}` : `${baseDir}/**/${line}`;
+		}
+		rules.push({ negate, test: compileExcludeGlobs([line]) });
+	}
+	if (rules.length === 0) return () => undefined;
+	return (relPath: string) => {
+		let verdict: boolean | undefined;
+		for (const r of rules) {
+			if (r.test(relPath)) verdict = !r.negate;
+		}
+		return verdict;
+	};
+};
+
+/** Read `<root>/.gitignore` (if any) and return its matcher. */
+export const loadRootGitignore = (workspaceRoot: string): ((relPath: string) => boolean | undefined) => {
+	try {
+		const text = readFileSync(join(workspaceRoot, '.gitignore'), 'utf8');
+		return compileGitignore(text.split('\n'));
+	} catch {
+		return () => undefined;
+	}
+};
+
+/**
+ * One matcher for everything the index should leave out: hard-skipped directories, the root
+ * `.gitignore`, and the caller's extra gitignore-style globs. Used by the scanner, the watcher
+ * and `indexFiles` so all three agree.
+ */
+export const buildExcludeMatcher = (workspaceRoot: string | null, excludeGlobs?: readonly string[]): ((relPath: string) => boolean) => {
+	const extra = compileExcludeGlobs(excludeGlobs);
+	const gitignore = workspaceRoot ? loadRootGitignore(workspaceRoot) : () => undefined;
+	return (relPath: string) => {
+		const p = relPath.replace(/\\/g, '/');
+		if (!p || p === '.') return false;
+		if (p.split('/').some(seg => SKIP_DIRS.has(seg))) return true;
+		if (extra(p)) return true;
+		return gitignore(p) === true;
+	};
+};
+
 export type ScanOptions = {
 	/** gitignore-style globs (relative to the workspace root) to leave out of the scan. */
 	excludeGlobs?: readonly string[];
+	/** Read `.gitignore` files and honour them (default true). */
+	respectGitignore?: boolean;
 };
 
 const countLines = (filePath: string): number => {
@@ -330,7 +427,19 @@ const dedupeFrameworks = (frameworks: FrameworkEntry[]): FrameworkEntry[] => {
 };
 
 export const scanWorkspace = (workspaceRoot: string, options: ScanOptions = {}): RawScanResult => {
-	const isExcluded = compileExcludeGlobs(options.excludeGlobs);
+	const extraExcluded = compileExcludeGlobs(options.excludeGlobs);
+	const respectGitignore = options.respectGitignore !== false;
+	// gitignore matchers, innermost last: the root file plus any nested `.gitignore` met while walking
+	const ignoreMatchers: ((relPath: string) => boolean | undefined)[] = [];
+	if (respectGitignore) ignoreMatchers.push(loadRootGitignore(workspaceRoot));
+	const isIgnored = (relPath: string): boolean => {
+		let verdict: boolean | undefined;
+		for (const m of ignoreMatchers) {
+			const v = m(relPath);
+			if (v !== undefined) verdict = v;
+		}
+		return verdict === true;
+	};
 	const languageCounts = new Map<string, number>();
 	const fileMeta: FileMetadataEntry[] = [];
 	let totalLoc = 0;
@@ -347,6 +456,12 @@ export const scanWorkspace = (workspaceRoot: string, options: ScanOptions = {}):
 		} catch {
 			continue;
 		}
+		if (respectGitignore && depth > 0 && entries.includes('.gitignore')) {
+			try {
+				const base = relative(workspaceRoot, absPath).replace(/\\/g, '/');
+				ignoreMatchers.push(compileGitignore(readFileSync(join(absPath, '.gitignore'), 'utf8').split('\n'), base));
+			} catch { /* unreadable nested ignore file */ }
+		}
 
 		for (const entry of entries) {
 			if (fileCount >= MAX_FILES) break;
@@ -354,11 +469,11 @@ export const scanWorkspace = (workspaceRoot: string, options: ScanOptions = {}):
 			let stat;
 			try { stat = statSync(fullPath); } catch { continue; }
 			const relPath = relative(workspaceRoot, fullPath).replace(/\\/g, '/');
-			if (isExcluded(relPath)) continue;
+			if (extraExcluded(relPath) || isIgnored(relPath)) continue;
 
 			if (stat.isDirectory()) {
 				if (depth >= MAX_DEPTH) continue;
-				if (SKIP_DIRS.has(entry) || entry.startsWith('.')) continue;
+				if (SKIP_DIRS.has(entry)) continue;
 				queue.push({ absPath: fullPath, depth: depth + 1 });
 			} else if (stat.isFile()) {
 				fileCount += 1;

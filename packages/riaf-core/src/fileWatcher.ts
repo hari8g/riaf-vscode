@@ -24,12 +24,26 @@ export type FileChangeEvent = {
 	filePath: string; // relative to workspaceRoot, forward-slash separated
 };
 
+export type WatcherOptions = {
+	/** Extra exclusion (e.g. `.gitignore` + user globs), evaluated on forward-slash relative paths. */
+	isExcluded?: (relPath: string) => boolean;
+	debounceMs?: number;
+};
+
 /** Lightweight recursive file watcher using Node's built-in fs.watch. */
 export class WorkspaceFileWatcher extends EventEmitter {
 	private _watchers: Map<string, ReturnType<typeof fsWatch>> = new Map();
 	private _pending: Map<string, FileChangeEvent> = new Map();
 	private _timer: ReturnType<typeof setTimeout> | null = null;
 	private _workspaceRoot = '';
+	private readonly _isExcluded: (relPath: string) => boolean;
+	private readonly _debounceMs: number;
+
+	constructor(options: WatcherOptions = {}) {
+		super();
+		this._isExcluded = options.isExcluded ?? (() => false);
+		this._debounceMs = options.debounceMs ?? WATCH_DEBOUNCE_MS;
+	}
 
 	start(workspaceRoot: string): void {
 		this._workspaceRoot = workspaceRoot;
@@ -74,8 +88,9 @@ export class WorkspaceFileWatcher extends EventEmitter {
 		// Recursively watch subdirectories that already exist
 		try {
 			for (const entry of readdirSync(absDir)) {
-				if (IGNORE_DIRS.has(entry) || entry.startsWith('.')) continue;
+				if (IGNORE_DIRS.has(entry)) continue;
 				const full = join(absDir, entry);
+				if (this._isExcluded(relative(this._workspaceRoot, full).replace(/\\/g, '/'))) continue;
 				try {
 					if (statSync(full).isDirectory()) this._watchDir(full);
 				} catch { /* ignore */ }
@@ -86,6 +101,7 @@ export class WorkspaceFileWatcher extends EventEmitter {
 	private _shouldIgnore(relPath: string): boolean {
 		const parts = relPath.split('/');
 		if (parts.some(p => IGNORE_DIRS.has(p))) return true;
+		if (this._isExcluded(relPath)) return true;
 		const ext = relPath.slice(relPath.lastIndexOf('.'));
 		return IGNORE_EXTENSIONS.has(ext);
 	}
@@ -98,7 +114,7 @@ export class WorkspaceFileWatcher extends EventEmitter {
 			this._pending.clear();
 			this._timer = null;
 			this.emit('changes', events);
-		}, WATCH_DEBOUNCE_MS);
+		}, this._debounceMs);
 	}
 
 	stop(): void {

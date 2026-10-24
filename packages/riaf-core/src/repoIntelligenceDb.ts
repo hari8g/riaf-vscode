@@ -19,8 +19,9 @@ import { dirname } from 'path';
 import type { Database, Sqlite3Static, SqlValue } from '@sqlite.org/sqlite-wasm';
 import { CommandEntry, CodeChunk, CodebaseSearchResult, ExtractedSymbol, FileMetadataEntry, FrameworkEntry, RepoIntelligenceIndexingStats, WorkspaceProfile } from './repoIntelligenceTypes.js';
 import { EmbeddingVector, cosineSimilarity, serializeEmbedding, deserializeEmbedding } from './embeddingService.js';
+import type { SymbolEdge } from './symbolGraph.js';
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 9;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 1000;
 const DEFAULT_SNIPPET_CHARS = 400;
 
@@ -360,12 +361,16 @@ CREATE TABLE IF NOT EXISTS ucg_graph_metrics (
   cycles_json         TEXT NOT NULL DEFAULT '[]',
   hot_files_json      TEXT NOT NULL DEFAULT '[]',
   ext_deps_json       TEXT NOT NULL DEFAULT '{}',
+  max_depth           INTEGER NOT NULL DEFAULT 0,
+  orphan_files_json   TEXT NOT NULL DEFAULT '[]',
   computed_at         INTEGER NOT NULL,
   FOREIGN KEY (workspace_hash) REFERENCES workspace_profiles(workspace_hash) ON DELETE CASCADE
 );
 `;
 
 type ColumnInfo = { name: string };
+
+export type ChunkLedgerEntry = { contentHash: string; mtimeMs: number | null; sizeBytes: number | null };
 
 type WorkspaceProfileRow = {
 	workspace_hash: string;
@@ -429,6 +434,10 @@ export type UCGGraphMetrics = {
 	cycles: string[][];
 	hotFiles: string[];
 	externalDeps: Record<string, number>;
+	/** Longest distance (in import hops) from an entry point to any reachable file. */
+	maxDepth: number;
+	/** Files with neither importers nor internal imports. */
+	orphanFiles: string[];
 	computedAt: number;
 };
 
@@ -741,8 +750,16 @@ export class RepoIntelligenceDb {
 				workspace_hash  TEXT NOT NULL,
 				file_path       TEXT NOT NULL,
 				content_hash    TEXT NOT NULL,
+				mtime_ms        REAL,
+				size_bytes      INTEGER,
 				PRIMARY KEY (workspace_hash, file_path)
 			)`);
+		// v8: the ledger remembers the stat the hash was computed from, so a full reindex can skip
+		// unchanged files without re-reading them — and cannot mistake the current scan for "stored".
+		if (!this._tableHasColumn(db, 'chunk_file_hashes', 'mtime_ms')) {
+			db.exec(`ALTER TABLE chunk_file_hashes ADD COLUMN mtime_ms REAL`);
+			db.exec(`ALTER TABLE chunk_file_hashes ADD COLUMN size_bytes INTEGER`);
+		}
 
 		this._ensureTable(db, 'ucg_file_nodes',
 			`CREATE TABLE IF NOT EXISTS ucg_file_nodes (
@@ -775,6 +792,38 @@ export class RepoIntelligenceDb {
 				PRIMARY KEY (workspace_hash, file_path, start_line)
 			)`);
 		db.exec(`CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_workspace ON chunk_embeddings(workspace_hash)`);
+
+		// v9: real graph depth + orphan list on the metrics row
+		if (!this._tableHasColumn(db, 'ucg_graph_metrics', 'max_depth')) {
+			db.exec(`ALTER TABLE ucg_graph_metrics ADD COLUMN max_depth INTEGER NOT NULL DEFAULT 0`);
+			db.exec(`ALTER TABLE ucg_graph_metrics ADD COLUMN orphan_files_json TEXT NOT NULL DEFAULT '[]'`);
+		}
+
+		// v9: symbol-level graph (calls / extends / implements / imports between definitions)
+		this._ensureTable(db, 'symbol_edges',
+			`CREATE TABLE IF NOT EXISTS symbol_edges (
+				workspace_hash TEXT NOT NULL,
+				from_file      TEXT NOT NULL,
+				from_symbol    TEXT,
+				to_name        TEXT NOT NULL,
+				to_file        TEXT,
+				edge_type      TEXT NOT NULL,
+				line           INTEGER NOT NULL
+			)`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_symbol_edges_from ON symbol_edges(workspace_hash, from_file)`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_symbol_edges_to_name ON symbol_edges(workspace_hash, to_name)`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_symbol_edges_to_file ON symbol_edges(workspace_hash, to_file)`);
+
+		// Content-addressed embedding cache: keyed by model + hash of the embedded text, independent
+		// of file path / workspace, so moved or duplicated chunks never hit the endpoint twice.
+		this._ensureTable(db, 'embedding_cache',
+			`CREATE TABLE IF NOT EXISTS embedding_cache (
+				model       TEXT NOT NULL,
+				text_hash   TEXT NOT NULL,
+				embedding   BLOB NOT NULL,
+				created_at  INTEGER NOT NULL,
+				PRIMARY KEY (model, text_hash)
+			)`);
 
 		db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 	}
@@ -1345,6 +1394,15 @@ export class RepoIntelligenceDb {
 		return new Map(rows.map(r => [r.file_path, r.content_hash]));
 	}
 
+	/** Ledger of hash + the stat it was computed from, keyed by relative path. */
+	async getChunkFileLedger(workspaceHash: string): Promise<Map<string, ChunkLedgerEntry>> {
+		const rows = await this._all<{ file_path: string; content_hash: string; mtime_ms: number | null; size_bytes: number | null }>(
+			`SELECT file_path, content_hash, mtime_ms, size_bytes FROM chunk_file_hashes WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return new Map(rows.map(r => [r.file_path, { contentHash: r.content_hash, mtimeMs: r.mtime_ms, sizeBytes: r.size_bytes }]));
+	}
+
 	async getChunkFileHash(workspaceHash: string, filePath: string): Promise<string | undefined> {
 		const row = await this._get<{ content_hash: string }>(
 			`SELECT content_hash FROM chunk_file_hashes WHERE workspace_hash = ? AND file_path = ?`,
@@ -1353,10 +1411,10 @@ export class RepoIntelligenceDb {
 		return row?.content_hash;
 	}
 
-	async upsertChunkFileHash(workspaceHash: string, filePath: string, contentHash: string): Promise<void> {
+	async upsertChunkFileHash(workspaceHash: string, filePath: string, contentHash: string, stat?: { mtimeMs: number; sizeBytes: number }): Promise<void> {
 		await this._run(
-			`INSERT OR REPLACE INTO chunk_file_hashes (workspace_hash, file_path, content_hash) VALUES (?, ?, ?)`,
-			[workspaceHash, filePath, contentHash],
+			`INSERT OR REPLACE INTO chunk_file_hashes (workspace_hash, file_path, content_hash, mtime_ms, size_bytes) VALUES (?, ?, ?, ?, ?)`,
+			[workspaceHash, filePath, contentHash, stat?.mtimeMs ?? null, stat?.sizeBytes ?? null],
 		);
 	}
 
@@ -1439,12 +1497,81 @@ export class RepoIntelligenceDb {
 
 	async getChunksWithoutEmbeddings(workspaceHash: string, limit: number): Promise<{ file_path: string; start_line: number; chunk_text: string }[]> {
 		type ChunkRow = { file_path: string; start_line: number; chunk_text: string };
+		// Per chunk, not per file: a file whose embedding pass was interrupted gets finished later.
 		return this._all<ChunkRow>(
-			`SELECT file_path, start_line, chunk_text FROM code_chunks
-			 WHERE workspace_hash = ? AND file_path NOT IN (SELECT DISTINCT file_path FROM chunk_embeddings WHERE workspace_hash = ?)
+			`SELECT c.file_path, c.start_line, c.chunk_text FROM code_chunks c
+			 LEFT JOIN chunk_embeddings e
+			   ON e.workspace_hash = c.workspace_hash AND e.file_path = c.file_path AND e.start_line = c.start_line
+			 WHERE c.workspace_hash = ? AND e.start_line IS NULL
 			 LIMIT ?`,
-			[workspaceHash, workspaceHash, limit],
+			[workspaceHash, limit],
 		);
+	}
+
+	/** Every stored chunk embedding for a workspace (to (re)build the in-memory vector index). */
+	async getAllChunkEmbeddings(workspaceHash: string): Promise<{ file_path: string; start_line: number; embedding: EmbeddingVector }[]> {
+		type Row = { file_path: string; start_line: number; embedding: Uint8Array };
+		const rows = await this._all<Row>(
+			`SELECT file_path, start_line, embedding FROM chunk_embeddings WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({ file_path: r.file_path, start_line: r.start_line, embedding: deserializeEmbedding(r.embedding) }));
+	}
+
+	/** Chunk rows for specific (filePath, startLine) keys — used to hydrate vector hits. */
+	async getChunksByKeys(workspaceHash: string, keys: { filePath: string; startLine: number }[]): Promise<Map<string, { file_path: string; start_line: number; end_line: number; chunk_text: string }>> {
+		type Row = { file_path: string; start_line: number; end_line: number; chunk_text: string };
+		const out = new Map<string, Row>();
+		for (let i = 0; i < keys.length; i += 100) {
+			const slice = keys.slice(i, i + 100);
+			const placeholders = slice.map(() => '(?, ?)').join(', ');
+			const rows = await this._all<Row>(
+				`SELECT file_path, start_line, end_line, chunk_text FROM code_chunks
+				 WHERE workspace_hash = ? AND (file_path, start_line) IN (VALUES ${placeholders})`,
+				[workspaceHash, ...slice.flatMap(k => [k.filePath, k.startLine])],
+			);
+			for (const r of rows) out.set(`${r.file_path}:${r.start_line}`, r);
+		}
+		return out;
+	}
+
+	// ── embedding cache (content-addressed) ──────────────────────────────────
+
+	async getCachedEmbeddings(model: string, textHashes: string[]): Promise<Map<string, EmbeddingVector>> {
+		type Row = { text_hash: string; embedding: Uint8Array };
+		const out = new Map<string, EmbeddingVector>();
+		for (let i = 0; i < textHashes.length; i += 200) {
+			const slice = textHashes.slice(i, i + 200);
+			const rows = await this._all<Row>(
+				`SELECT text_hash, embedding FROM embedding_cache WHERE model = ? AND text_hash IN (${slice.map(() => '?').join(',')})`,
+				[model, ...slice],
+			);
+			for (const r of rows) out.set(r.text_hash, deserializeEmbedding(r.embedding));
+		}
+		return out;
+	}
+
+	async putCachedEmbeddings(model: string, entries: { textHash: string; embedding: EmbeddingVector }[]): Promise<void> {
+		const now = Date.now();
+		for (const e of entries) {
+			await this._run(
+				`INSERT OR REPLACE INTO embedding_cache (model, text_hash, embedding, created_at) VALUES (?, ?, ?, ?)`,
+				[model, e.textHash, serializeEmbedding(e.embedding), now],
+			);
+		}
+	}
+
+	async getEmbeddingCacheSize(model?: string): Promise<number> {
+		type Row = { n: number };
+		const rows = model
+			? await this._all<Row>(`SELECT COUNT(*) AS n FROM embedding_cache WHERE model = ?`, [model])
+			: await this._all<Row>(`SELECT COUNT(*) AS n FROM embedding_cache`, []);
+		return rows[0]?.n ?? 0;
+	}
+
+	/** Drop cache rows older than `maxAgeMs` (housekeeping after model changes). */
+	async pruneEmbeddingCache(maxAgeMs: number): Promise<void> {
+		await this._run(`DELETE FROM embedding_cache WHERE created_at < ?`, [Date.now() - maxAgeMs]);
 	}
 
 	async getChunksForFile(workspaceHash: string, filePath: string): Promise<{ file_path: string; start_line: number; chunk_text: string }[]> {
@@ -1456,11 +1583,16 @@ export class RepoIntelligenceDb {
 		);
 	}
 
-	/** Hybrid BM25 + vector search with Reciprocal Rank Fusion (RRF). */
+	/**
+	 * Hybrid BM25 + vector search with Reciprocal Rank Fusion (RRF).
+	 *
+	 * `vector` is either the query embedding (exhaustive cosine scan — fine for small stores and
+	 * the reference implementation) or an already-ranked candidate list from an ANN index.
+	 */
 	async searchChunksHybrid(
 		workspaceHash: string,
 		query: string,
-		queryEmbedding: EmbeddingVector | null,
+		vector: EmbeddingVector | { filePath: string; startLine: number; score: number }[] | null,
 		limit: number,
 		snippetMaxLen = DEFAULT_SNIPPET_CHARS,
 	): Promise<CodebaseSearchResult[]> {
@@ -1469,28 +1601,35 @@ export class RepoIntelligenceDb {
 		const bm25Ranks = new Map<string, number>(); // key = "filePath:startLine"
 		bm25Results.forEach((r, idx) => bm25Ranks.set(`${r.filePath}:${r.startLine}`, idx + 1));
 
-		if (!queryEmbedding) {
-			return bm25Results.slice(0, limit);
+		if (!vector || vector.length === 0) return bm25Results.slice(0, limit);
+
+		type VecHit = { filePath: string; startLine: number; endLine: number; snippet: string; sim: number };
+		let vecTopK: VecHit[];
+		if (typeof vector[0] === 'number') {
+			// exhaustive scan
+			type EmbRow = { file_path: string; start_line: number; end_line: number; chunk_text: string; embedding: Uint8Array };
+			const embRows = await this._all<EmbRow>(
+				`SELECT ce.file_path, ce.start_line, cc.end_line, cc.chunk_text, ce.embedding
+				 FROM chunk_embeddings ce
+				 JOIN code_chunks cc ON cc.workspace_hash = ce.workspace_hash
+				   AND cc.file_path = ce.file_path AND cc.start_line = ce.start_line
+				 WHERE ce.workspace_hash = ?`,
+				[workspaceHash],
+			);
+			const q = vector as EmbeddingVector;
+			vecTopK = embRows.map(r => ({
+				filePath: r.file_path, startLine: r.start_line, endLine: r.end_line,
+				snippet: truncateSnippet(r.chunk_text, snippetMaxLen), sim: cosineSimilarity(q, deserializeEmbedding(r.embedding)),
+			})).sort((a, b) => b.sim - a.sim).slice(0, limit * 2);
+		} else {
+			// pre-ranked ANN hits → hydrate line ranges and text
+			const hits = (vector as { filePath: string; startLine: number; score: number }[]).slice(0, limit * 2);
+			const rows = await this.getChunksByKeys(workspaceHash, hits);
+			vecTopK = hits.flatMap(h => {
+				const r = rows.get(`${h.filePath}:${h.startLine}`);
+				return r ? [{ filePath: h.filePath, startLine: h.startLine, endLine: r.end_line, snippet: truncateSnippet(r.chunk_text, snippetMaxLen), sim: h.score }] : [];
+			});
 		}
-
-		// Vector results: load all embeddings for this workspace and rank by cosine similarity
-		type EmbRow = { file_path: string; start_line: number; end_line: number; chunk_text: string; embedding: Uint8Array };
-		const embRows = await this._all<EmbRow>(
-			`SELECT ce.file_path, ce.start_line, cc.end_line, cc.chunk_text, ce.embedding
-			 FROM chunk_embeddings ce
-			 JOIN code_chunks cc ON cc.workspace_hash = ce.workspace_hash
-			   AND cc.file_path = ce.file_path AND cc.start_line = ce.start_line
-			 WHERE ce.workspace_hash = ?`,
-			[workspaceHash],
-		);
-
-		const vectorScored = embRows.map(r => {
-			const vec = deserializeEmbedding(r.embedding);
-			const sim = cosineSimilarity(queryEmbedding, vec);
-			return { filePath: r.file_path, startLine: r.start_line, endLine: r.end_line, snippet: truncateSnippet(r.chunk_text, snippetMaxLen), sim };
-		});
-		vectorScored.sort((a, b) => b.sim - a.sim);
-		const vecTopK = vectorScored.slice(0, limit * 2);
 		const vecRanks = new Map<string, number>();
 		vecTopK.forEach((r, idx) => vecRanks.set(`${r.filePath}:${r.startLine}`, idx + 1));
 
@@ -1936,6 +2075,32 @@ export class RepoIntelligenceDb {
 		}
 	}
 
+	/** Mark edges that resolved to `filePath` as unresolved (the target was deleted). */
+	async unresolveEdgesTo(workspaceHash: string, filePath: string): Promise<void> {
+		await this._run(
+			`UPDATE ucg_import_edges SET resolved_file = NULL WHERE workspace_hash = ? AND resolved_file = ?`,
+			[workspaceHash, filePath],
+		);
+	}
+
+	/** Internal edges whose target could not be placed in the workspace (dangling / not-yet-created). */
+	async getUnresolvedEdges(workspaceHash: string): Promise<UCGImportEdge[]> {
+		type Row = { from_file: string; to_module: string; edge_type: string };
+		const rows = await this._all<Row>(
+			`SELECT from_file, to_module, edge_type FROM ucg_import_edges
+			 WHERE workspace_hash = ? AND resolved_file IS NULL AND is_external = 0`,
+			[workspaceHash],
+		);
+		return rows.map(r => ({ fromFile: r.from_file, toModule: r.to_module, resolvedFile: null, isExternal: false, edgeType: r.edge_type }));
+	}
+
+	async setEdgeResolution(workspaceHash: string, fromFile: string, toModule: string, resolvedFile: string | null): Promise<void> {
+		await this._run(
+			`UPDATE ucg_import_edges SET resolved_file = ? WHERE workspace_hash = ? AND from_file = ? AND to_module = ?`,
+			[resolvedFile, workspaceHash, fromFile, toModule],
+		);
+	}
+
 	/** Recompute imported_by_count for every node from the current edge table. */
 	async refreshUCGImportedByCounts(workspaceHash: string): Promise<void> {
 		await this._run(
@@ -1951,8 +2116,8 @@ export class RepoIntelligenceDb {
 		await this._run(
 			`INSERT OR REPLACE INTO ucg_graph_metrics
 				(workspace_hash, total_nodes, total_edges, entry_count, cycle_count,
-				 cycles_json, hot_files_json, ext_deps_json, computed_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 cycles_json, hot_files_json, ext_deps_json, max_depth, orphan_files_json, computed_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				workspaceHash,
 				metrics.totalNodes,
@@ -1962,9 +2127,118 @@ export class RepoIntelligenceDb {
 				JSON.stringify(metrics.cycles),
 				JSON.stringify(metrics.hotFiles),
 				JSON.stringify(metrics.externalDeps),
+				metrics.maxDepth ?? 0,
+				JSON.stringify(metrics.orphanFiles ?? []),
 				metrics.computedAt,
 			],
 		);
+	}
+
+	// ── symbol graph ─────────────────────────────────────────────────────────
+
+	private _mapSymbolEdge = (r: { from_file: string; from_symbol: string | null; to_name: string; to_file: string | null; edge_type: string; line: number }): SymbolEdge => ({
+		fromFile: r.from_file, fromSymbol: r.from_symbol, toName: r.to_name, toFile: r.to_file, edgeType: r.edge_type as SymbolEdge['edgeType'], line: r.line,
+	});
+
+	async replaceSymbolEdgesForFile(workspaceHash: string, filePath: string, edges: SymbolEdge[]): Promise<void> {
+		await this._run(`DELETE FROM symbol_edges WHERE workspace_hash = ? AND from_file = ?`, [workspaceHash, filePath]);
+		await this._insertSymbolEdges(workspaceHash, edges);
+	}
+
+	async replaceAllSymbolEdges(workspaceHash: string, edges: SymbolEdge[]): Promise<void> {
+		await this._run(`DELETE FROM symbol_edges WHERE workspace_hash = ?`, [workspaceHash]);
+		await this._insertSymbolEdges(workspaceHash, edges);
+	}
+
+	private async _insertSymbolEdges(workspaceHash: string, edges: SymbolEdge[]): Promise<void> {
+		const BATCH = 200;
+		for (let i = 0; i < edges.length; i += BATCH) {
+			const slice = edges.slice(i, i + BATCH);
+			const placeholders = slice.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
+			const params: (string | number | null)[] = [];
+			for (const e of slice) params.push(workspaceHash, e.fromFile, e.fromSymbol, e.toName, e.toFile, e.edgeType, e.line);
+			await this._run(`INSERT INTO symbol_edges (workspace_hash, from_file, from_symbol, to_name, to_file, edge_type, line) VALUES ${placeholders}`, params);
+		}
+	}
+
+	/** Targets that pointed at a deleted file keep the name but lose the file. */
+	async unresolveSymbolEdgesTo(workspaceHash: string, filePath: string): Promise<void> {
+		await this._run(`UPDATE symbol_edges SET to_file = NULL WHERE workspace_hash = ? AND to_file = ?`, [workspaceHash, filePath]);
+	}
+
+	/** Edges from other files that name a symbol now defined in `filePath` (after a file was created). */
+	async reresolveSymbolEdgesTo(workspaceHash: string, filePath: string, names: string[]): Promise<void> {
+		if (!names.length) return;
+		const BATCH = 100;
+		for (let i = 0; i < names.length; i += BATCH) {
+			const slice = names.slice(i, i + BATCH);
+			await this._run(
+				`UPDATE symbol_edges SET to_file = ? WHERE workspace_hash = ? AND to_file IS NULL AND to_name IN (${slice.map(() => '?').join(', ')})`,
+				[filePath, workspaceHash, ...slice],
+			);
+		}
+	}
+
+	/** All edges whose target is `filePath` (optionally one symbol in it), plus unresolved edges by name. */
+	async getSymbolEdgesTo(workspaceHash: string, filePath: string | null, toName?: string, limit = 500): Promise<SymbolEdge[]> {
+		const where: string[] = ['workspace_hash = ?'];
+		const params: (string | number)[] = [workspaceHash];
+		if (filePath && toName) { where.push('(to_file = ? OR to_file IS NULL)'); params.push(filePath); }
+		else if (filePath) { where.push('to_file = ?'); params.push(filePath); }
+		if (toName) { where.push('to_name = ?'); params.push(toName); }
+		const rows = await this._all<{ from_file: string; from_symbol: string | null; to_name: string; to_file: string | null; edge_type: string; line: number }>(
+			`SELECT from_file, from_symbol, to_name, to_file, edge_type, line FROM symbol_edges
+			 WHERE ${where.join(' AND ')} ORDER BY from_file, line LIMIT ?`,
+			[...params, limit],
+		);
+		return rows.map(this._mapSymbolEdge);
+	}
+
+	async getSymbolEdgesFrom(workspaceHash: string, filePath: string, fromSymbol?: string, limit = 500): Promise<SymbolEdge[]> {
+		const where = ['workspace_hash = ?', 'from_file = ?'];
+		const params: (string | number)[] = [workspaceHash, filePath];
+		if (fromSymbol) { where.push('(from_symbol = ? OR from_symbol LIKE ?)'); params.push(fromSymbol, `%.${fromSymbol}`); }
+		const rows = await this._all<{ from_file: string; from_symbol: string | null; to_name: string; to_file: string | null; edge_type: string; line: number }>(
+			`SELECT from_file, from_symbol, to_name, to_file, edge_type, line FROM symbol_edges
+			 WHERE ${where.join(' AND ')} ORDER BY line LIMIT ?`,
+			[...params, limit],
+		);
+		return rows.map(this._mapSymbolEdge);
+	}
+
+	async getSymbolEdgeCount(workspaceHash: string): Promise<number> {
+		const row = await this._get<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM symbol_edges WHERE workspace_hash = ?`, [workspaceHash]);
+		return row?.cnt ?? 0;
+	}
+
+	/** name → defining files, for the whole workspace (used by the full graph pass). */
+	async getSymbolDefinerIndex(workspaceHash: string): Promise<Map<string, string[]>> {
+		const rows = await this._all<{ name: string; file_path: string }>(
+			`SELECT DISTINCT name, file_path FROM symbols WHERE workspace_hash = ?`,
+			[workspaceHash],
+		);
+		const out = new Map<string, string[]>();
+		for (const r of rows) {
+			const simple = r.name.includes('.') ? r.name.split('.').pop()! : r.name;
+			const list = out.get(simple) ?? [];
+			if (!list.includes(r.file_path)) list.push(r.file_path);
+			out.set(simple, list);
+		}
+		return out;
+	}
+
+	async getSymbolsByName(workspaceHash: string, name: string, filePath?: string): Promise<ExtractedSymbol[]> {
+		type SymbolRow = { name: string; kind: ExtractedSymbol['kind']; file_path: string; start_line: number; end_line: number; signature: string | null; docstring: string | null; is_exported: number; content_hash: string };
+		const rows = await this._all<SymbolRow>(
+			`SELECT name, kind, file_path, start_line, end_line, signature, docstring, is_exported, content_hash
+			 FROM symbols WHERE workspace_hash = ? AND (name = ? OR name LIKE ?)${filePath ? ' AND file_path = ?' : ''}
+			 ORDER BY is_exported DESC, file_path, start_line LIMIT 50`,
+			filePath ? [workspaceHash, name, `%.${name}`, filePath] : [workspaceHash, name, `%.${name}`],
+		);
+		return rows.map(row => ({
+			name: row.name, kind: row.kind, filePath: row.file_path, startLine: row.start_line, endLine: row.end_line,
+			signature: row.signature ?? '', docstring: row.docstring ?? '', isExported: row.is_exported === 1, contentHash: row.content_hash,
+		}));
 	}
 
 	/** Returns edges where `fromFile` is the given file (what it imports). */
@@ -2063,10 +2337,12 @@ export class RepoIntelligenceDb {
 			cycles_json: string;
 			hot_files_json: string;
 			ext_deps_json: string;
+			max_depth: number;
+			orphan_files_json: string;
 			computed_at: number;
 		}>(
 			`SELECT total_nodes, total_edges, entry_count, cycle_count,
-			        cycles_json, hot_files_json, ext_deps_json, computed_at
+			        cycles_json, hot_files_json, ext_deps_json, max_depth, orphan_files_json, computed_at
 			 FROM ucg_graph_metrics WHERE workspace_hash = ?`,
 			[workspaceHash],
 		);
@@ -2081,6 +2357,8 @@ export class RepoIntelligenceDb {
 			cycles: JSON.parse(row.cycles_json) as string[][],
 			hotFiles: JSON.parse(row.hot_files_json) as string[],
 			externalDeps: JSON.parse(row.ext_deps_json) as Record<string, number>,
+			maxDepth: row.max_depth ?? 0,
+			orphanFiles: JSON.parse(row.orphan_files_json ?? '[]') as string[],
 			computedAt: row.computed_at,
 		};
 	}

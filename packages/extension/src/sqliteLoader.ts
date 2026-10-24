@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { setSqliteModuleLoader } from '@bosch-mps/riaf-core';
+import { setSqliteModuleLoader, setTreeSitterWasmDir } from '@bosch-mps/riaf-core';
 
 /**
  * The extension bundle is CommonJS (VS Code requires it), but @sqlite.org/sqlite-wasm is
@@ -24,4 +24,20 @@ export function installSqliteLoader(extensionRoot: string): void {
 		throw new Error(`RIAF: sqlite-wasm not found. Looked in:\n${candidates.join('\n')}`);
 	}
 	setSqliteModuleLoader(() => realDynamicImport(pathToFileURL(found).href));
+	installTreeSitterDir(extensionRoot);
+}
+
+/**
+ * Tree-sitter grammars are vendored the same way (dist/vendor/tree-sitter). Optional: when the
+ * directory is missing riaf-core falls back to its regex chunker.
+ */
+export function installTreeSitterDir(extensionRoot: string): string | undefined {
+	const candidates = [
+		join(extensionRoot, 'dist', 'vendor', 'tree-sitter'),
+		join(extensionRoot, '..', '..', 'node_modules', '@vscode', 'tree-sitter-wasm', 'wasm'),
+		join(extensionRoot, 'node_modules', '@vscode', 'tree-sitter-wasm', 'wasm'),
+	];
+	const found = candidates.find(p => existsSync(join(p, 'tree-sitter.wasm')));
+	if (found) { setTreeSitterWasmDir(found); }
+	return found;
 }

@@ -15,6 +15,8 @@ export {
 	type ContextualProfile,
 	type SearchOptions,
 	type IndexStatus,
+	type OrgSlice,
+	orgSlicesForPath,
 } from './riafIndex.js';
 
 // ── plain data types ────────────────────────────────────────────────────────
@@ -48,6 +50,11 @@ export {
 	detectLanguage,
 	detectLanguageForPath,
 	compileExcludeGlobs,
+	compileFileGlob,
+	compileGitignore,
+	loadRootGitignore,
+	buildExcludeMatcher,
+	SKIP_DIRS,
 	EXT_TO_LANGUAGE,
 	type RawScanResult,
 	type ScanOptions,
@@ -60,6 +67,27 @@ export {
 	SKIP_LANGUAGES,
 } from './codeChunker.js';
 export { detectCommands, type DetectedCommands } from './commandDetector.js';
+export {
+	grepWorkspace,
+	globWorkspace,
+	walkFiles,
+	findRipgrep,
+	formatGrepResult,
+	type GrepOptions,
+	type GrepMatch,
+	type GrepResult,
+	type GlobOptions,
+} from './workspaceSearch.js';
+export {
+	ensureTreeSitterLanguages,
+	parseOutline,
+	flattenOutline,
+	treeSitterReady,
+	setTreeSitterWasmDir,
+	setTreeSitterEnabled,
+	TREE_SITTER_LANGUAGES,
+	type AstDefinition,
+} from './treeSitterChunker.js';
 
 // ── universal context graph ─────────────────────────────────────────────────
 export {
@@ -83,6 +111,14 @@ export {
 	type EmbeddingVector,
 } from './embeddingService.js';
 
+export { HnswIndex, bruteForceTopK, type HnswOptions, type HnswHit } from './hnsw.js';
+export { createModuleResolver, createModuleResolverFromDisk, type ModuleResolver, type Resolution } from './moduleResolver.js';
+export {
+	extractSymbolEdges, extractImportBindings, extractInheritance, maskSource, formatNeighborhood,
+	type SymbolEdge, type SymbolEdgeType, type SymbolNeighborhood, type ImportBinding, type DefinitionResolver, type ExtractSymbolEdgesInput,
+} from './symbolGraph.js';
+export { computeMaxDepth } from './universalGraphAnalyzer.js';
+
 // ── git context ─────────────────────────────────────────────────────────────
 export {
 	getGitDiffStat,
@@ -94,7 +130,7 @@ export {
 } from './gitContextIndexer.js';
 
 // ── file watching ───────────────────────────────────────────────────────────
-export { WorkspaceFileWatcher, type FileChangeEvent } from './fileWatcher.js';
+export { WorkspaceFileWatcher, type FileChangeEvent, type WatcherOptions } from './fileWatcher.js';
 
 // ── org-extension (STaaS) indexers ──────────────────────────────────────────
 export {

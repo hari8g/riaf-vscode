@@ -21,7 +21,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@sqlite.org/sqlite-wasm": "^3.54.1-build1"
+    "@sqlite.org/sqlite-wasm": "^3.54.1-build1",
+    "@vscode/tree-sitter-wasm": "^0.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------*/
 
 import { dirname, join, relative } from 'path';
+import type { ModuleResolver } from './moduleResolver.js';
 
 export type ImportEdge = {
 	fromFile: string;
@@ -64,7 +65,8 @@ const IMPORT_PATTERNS: Record<string, RegExp[]> = {
 	],
 	Go: [
 		/import\s+"([^"]+)"/gm,
-		/import\s+\w+\s+"([^"]+)"/gm,
+		/import\s+[\w.]+\s+"([^"]+)"/gm,
+		// grouped import blocks are expanded separately (see extractGoGroupedImports)
 	],
 	Rust: [
 		/(?:^|\n)\s*use\s+([\w:]+)/gm,
@@ -179,47 +181,68 @@ function resolveRelativePath(fromFile: string, modulePath: string, language: str
 	return null;
 }
 
+/** `import ( "fmt"\n alias "github.com/x/y" )` blocks → the quoted paths. */
+const extractGoGroupedImports = (content: string): string[] => {
+	const out: string[] = [];
+	const block = /import\s*\(([\s\S]*?)\)/g;
+	let m: RegExpExecArray | null;
+	while ((m = block.exec(content)) !== null) {
+		const re = /(?:^|\n)\s*(?:[\w.]+\s+)?"([^"]+)"/g;
+		let q: RegExpExecArray | null;
+		while ((q = re.exec(m[1])) !== null) out.push(q[1]);
+	}
+	return out;
+};
+
+/** Python `from x import (a, b)` and `import a, b` → each module. */
+const extractPythonMultiImports = (content: string): string[] => {
+	const out: string[] = [];
+	const re = /(?:^|\n)\s*import\s+([\w.]+(?:\s*,\s*[\w.]+)+)/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(content)) !== null) for (const part of m[1].split(',')) out.push(part.trim().split(/\s+as\s+/)[0]);
+	return out;
+};
+
 export function extractImports(
 	filePath: string,
 	content: string,
 	language: string,
 	workspaceRoot: string,
+	resolver?: ModuleResolver,
 ): ImportEdge[] {
 	const relPath = relative(workspaceRoot, filePath).replace(/\\/g, '/');
 	const patterns = IMPORT_PATTERNS[language] ?? [];
 	const edges: ImportEdge[] = [];
 	const seen = new Set<string>();
 
+	const push = (raw: string, edgeType: ImportEdge['edgeType']) => {
+		if (!raw || raw.length < 2) return;
+		if (seen.has(raw)) return;
+		seen.add(raw);
+		let external: boolean;
+		let resolvedFile: string | null;
+		if (resolver) {
+			({ isExternal: external, resolvedFile } = resolver.resolve(relPath, raw, language));
+		} else {
+			external = isExternalModule(raw, language);
+			resolvedFile = external ? null : resolveRelativePath(relPath, raw, language);
+		}
+		edges.push({ fromFile: relPath, toModule: raw, resolvedFile, isExternal: external, edgeType });
+	};
+
 	for (const pattern of patterns) {
 		pattern.lastIndex = 0;
 		let match: RegExpExecArray | null;
 		while ((match = pattern.exec(content)) !== null) {
-			const raw = match[1]?.trim();
-			if (!raw || raw.length < 2) {
-				continue;
-			}
-			const key = `${pattern.source}:${raw}`;
-			if (seen.has(key)) {
-				continue;
-			}
-			seen.add(key);
-
-			const external = isExternalModule(raw, language);
-			const resolvedFile = external ? null : resolveRelativePath(relPath, raw, language);
-
-			edges.push({
-				fromFile: relPath,
-				toModule: raw,
-				resolvedFile,
-				isExternal: external,
-				edgeType: pattern.source.includes('require') ? 'require'
-					: pattern.source.includes('include') ? 'include'
-						: pattern.source.includes('from') && language === 'Python' ? 'from_import'
-							: pattern.source.includes('use') ? 'use'
-								: 'import',
-			});
+			push(match[1]?.trim(), pattern.source.includes('require') ? 'require'
+				: pattern.source.includes('include') ? 'include'
+					: pattern.source.includes('from') && language === 'Python' ? 'from_import'
+						: pattern.source.includes('use') ? 'use'
+							: 'import');
 		}
 	}
+	if (language === 'Go') for (const p of extractGoGroupedImports(content)) push(p, 'import');
+	if (language === 'Python') for (const p of extractPythonMultiImports(content)) push(p, 'import');
 
 	return edges;
 }

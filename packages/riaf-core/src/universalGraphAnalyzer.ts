@@ -132,9 +132,45 @@ export function computeMetrics(
 		entryPoints,
 		cycleCount: cycles.length,
 		cycles,
-		maxDepth: 0,
+		maxDepth: computeMaxDepth(nodeSet, edges, entryPoints),
 		orphanFiles,
 		hotFiles,
 		externalDeps,
 	};
+}
+
+/**
+ * Depth of the import graph: multi-source BFS from every entry point (in-degree 0) along resolved
+ * import edges; the result is the largest number of hops any file sits away from the nearest entry
+ * point. Cycles are handled by the visited set. Files unreachable from an entry point (only inside
+ * cycles) are seeded afterwards so they still contribute.
+ */
+export function computeMaxDepth(nodeSet: Set<string>, edges: ImportEdge[], entryPoints: string[]): number {
+	const adj = new Map<string, string[]>();
+	for (const e of edges) {
+		if (e.resolvedFile && nodeSet.has(e.resolvedFile) && nodeSet.has(e.fromFile)) {
+			(adj.get(e.fromFile) ?? adj.set(e.fromFile, []).get(e.fromFile)!).push(e.resolvedFile);
+		}
+	}
+	const dist = new Map<string, number>();
+	let max = 0;
+	const bfs = (seeds: string[]) => {
+		const queue: string[] = [];
+		for (const s of seeds) { if (!dist.has(s)) { dist.set(s, 0); queue.push(s); } }
+		let head = 0;
+		while (head < queue.length) {
+			const v = queue[head++];
+			const d = dist.get(v)!;
+			for (const w of adj.get(v) ?? []) {
+				if (dist.has(w)) continue;
+				dist.set(w, d + 1);
+				if (d + 1 > max) max = d + 1;
+				queue.push(w);
+			}
+		}
+	};
+	bfs(entryPoints);
+	// nodes only reachable through a cycle have no entry point: seed them one at a time
+	for (const n of nodeSet) if (!dist.has(n)) bfs([n]);
+	return max;
 }

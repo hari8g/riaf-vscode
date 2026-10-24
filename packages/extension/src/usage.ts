@@ -19,8 +19,14 @@ export class UsageMeter implements UsageMeterPort {
 		this._allTime = _state.get<UsageTotals>('riaf.usage.allTime', zero());
 	}
 
+	/** Session calls per purpose (agent, agent:explore, agent:summary, plan, …) for the usage report. */
+	private readonly _byPurpose = new Map<string, { calls: number; inputTokens: number; outputTokens: number }>();
+
 	record(usage: LLMMessageUsage, meta: { provider: ProviderName; model: string; purpose: string }): void {
 		const cost = calculateTurnCostUSD(usage, meta.provider, meta.model) ?? 0;
+		const p = this._byPurpose.get(meta.purpose) ?? { calls: 0, inputTokens: 0, outputTokens: 0 };
+		p.calls++; p.inputTokens += usage.inputTokens; p.outputTokens += usage.outputTokens;
+		this._byPurpose.set(meta.purpose, p);
 		for (const t of [this._session, this._allTime]) {
 			t.calls++;
 			t.inputTokens += usage.inputTokens;
@@ -45,9 +51,15 @@ export class UsageMeter implements UsageMeterPort {
 
 	get session(): UsageTotals { return { ...this._session }; }
 	get allTime(): UsageTotals { return { ...this._allTime }; }
+	get byPurpose(): Record<string, { calls: number; inputTokens: number; outputTokens: number }> { return Object.fromEntries(this._byPurpose); }
 
 	summaryMarkdown(): string {
 		const row = (n: string, t: UsageTotals) => `| ${n} | ${t.calls} | ${t.inputTokens.toLocaleString()} | ${t.outputTokens.toLocaleString()} | ${t.cacheReadTokens.toLocaleString()} | ${t.savedTokens.toLocaleString()} | $${t.costUSD.toFixed(4)} |`;
-		return ['| scope | calls | input | output | cache read | saved by RIAF | est. cost |', '|---|---|---|---|---|---|---|', row('this session', this._session), row('all time', this._allTime)].join('\n');
+		const lines = ['| scope | calls | input | output | cache read | saved by RIAF | est. cost |', '|---|---|---|---|---|---|---|', row('this session', this._session), row('all time', this._allTime)];
+		if (this._byPurpose.size) {
+			lines.push('', '| this session by purpose | calls | input | output |', '|---|---|---|---|');
+			for (const [k, v] of [...this._byPurpose].sort((a, b) => b[1].inputTokens - a[1].inputTokens)) { lines.push(`| ${k} | ${v.calls} | ${v.inputTokens.toLocaleString()} | ${v.outputTokens.toLocaleString()} |`); }
+		}
+		return lines.join('\n');
 	}
 }

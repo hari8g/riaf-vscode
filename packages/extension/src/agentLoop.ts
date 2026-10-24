@@ -4,14 +4,18 @@ import {
 	buildAgentTailHints, buildCrossQueryFileReadHint, buildEditCompletionHint, buildExplorationBudgetHint,
 	buildLargeFileEditHint, buildRepeatEditHint, buildRepeatFileReadHint, buildRepeatReadHint,
 	createEditCompletionTracker, createReadOnlyCallCounts, estimateChatHistoryTokens, estimateTokens,
-	generateAgentPlan, markPlanItemDoneForTool, needsEditCompletion, prepareMessagesForModel,
-	recordFileReadSize, shouldSkipDuplicateFileRead, trackFileEdit, trackFileRead, trackReadOnlyCall,
+	generateAgentPlan, getLLMRetryDelayMs, getMaxLLMRetryAttempts, invalidateFileRead, isCompactableToolName,
+	markPlanItemDoneForTool, markTruncatedEditTool, needsEditCompletion, prepareMessagesForModel,
+	recordFileReadSize, shouldForceAggressiveTrimOnRetry, shouldSkipDuplicateFileRead, summarizeThreadMiddle, trackFileEdit, trackFileRead, trackReadOnlyCall,
 	URI, generateUuid,
-	type ChatMessage, type FileReadRecord, type LLMCallPort, type PlanMessage, type RawToolParamsObj,
+	type ChatMessage, type FileReadRecord, type LLMCallPort, type LLMErrorLike, type PlanMessage, type RawToolParamsObj,
 } from '@bosch-mps/token-opt';
 import type { RiafSettings } from './config.js';
 import type { ModelTransport, ToolCall, TransportMessage } from './modelTransport.js';
 import { COMMAND_TOOLS, EDIT_TOOLS, READ_ONLY_TOOLS, TOOL_SPECS, executeTool, type ToolContext } from './tools/toolRegistry.js';
+import { loadHooks } from './tools/hooks.js';
+import { loadProjectRules } from './projectRules.js';
+import type { Checkpoint, CheckpointStore } from './checkpoints.js';
 import type { UsageMeter } from './usage.js';
 
 export type AgentMode = 'agent' | 'plan' | 'explain' | 'verify';
@@ -33,7 +37,17 @@ export interface AgentRunOptions {
 	stream: vscode.ChatResponseStream;
 	token: vscode.CancellationToken;
 	log: (msg: string) => void;
+	/** Base delay for transient model-error retries (tests pass a small value). */
+	retryDelayMs?: number;
+	/** Pre-edit snapshots for this turn (RIAF: Rewind). */
+	checkpoint?: { store: CheckpointStore; current: Checkpoint };
+	/** How long to wait for language-server diagnostics after an edit (default 1200 ms; tests pass 0). */
+	diagnosticsSettleMs?: number;
 }
+
+/** How many times an empty / cut-off model response is nudged before the run ends visibly. */
+const MAX_EMPTY_RESPONSE_NUDGES = 2;
+const DEFAULT_RETRY_DELAY_MS = 2_000;
 
 export interface AgentRunResult {
 	history: ChatMessage[];
@@ -53,6 +67,8 @@ const toolMsg = (call: ToolCall, ok: boolean, content: string): ChatMessage => {
 	const params = { ...call.args, ...(typeof p === 'string' ? { uri: URI.file(p) } : {}) };
 	return {
 		role: 'tool', content, id: call.id, rawParams, name: call.name, params,
+		// compactStaleToolResults only touches messages flagged compactable.
+		compactable: isCompactableToolName(call.name),
 		...(ok ? { type: 'success', result: content } : { type: 'tool_error', result: content }),
 	} as unknown as ChatMessage;
 };
@@ -82,9 +98,13 @@ function toTransportMessages(history: ChatMessage[]): TransportMessage[] {
 const STABLE_SYSTEM = `You are RIAF, a coding agent inside VS Code. You work in a loop: plan → gather context → edit → verify.
 
 Tool policy (token discipline):
-- Start with search_codebase or get_context_profile; never read many files blindly.
+- Start with search_codebase (concepts) or grep (exact identifiers, error strings, every call site) plus glob to find files; never read many files blindly.
+- For questions about services, REST routes, library consumers, config per environment, infrastructure or CI, use the org tools (get_service_topology, resolve_api_contract, get_dependency_impact, get_config_drift, get_infra_resources) — they answer from the index without reading files. get_git_context shows what is already in flight.
 - Read a file at most once; use get_file_outline or a line range when the file is large.
+- Before changing a function signature, a class or an exported type, call find_references (or get_neighbors for the file) and update every call site in the same turn. read_file results carry a <dependents> block with the one-hop callers — use it.
 - Combine all changes to one file into a single edit_file call with several search/replace blocks.
+- Edit results include the language server's diagnostics for that file: fix reported errors before running tests.
+- For open-ended investigation, delegate to the explore tool and work from its report instead of reading many files yourself.
 - After editing, run run_tests (or the relevant typecheck/lint) once and fix failures; do not loop on the same failing command.
 - Stop when the task is done; summarise what changed in 3-6 lines. Do not restate file contents.
 - Paths are workspace-relative. Never invent file paths — find them first.`;
@@ -97,6 +117,7 @@ const MODE_SYSTEM: Record<AgentMode, string> = {
 };
 
 const toolsForMode = (mode: AgentMode, s: RiafSettings) => TOOL_SPECS.filter(t => {
+	if (t.name === 'explore' && !s.agent.exploreSubagent) { return false; }
 	if (mode === 'plan' || mode === 'explain') { return READ_ONLY_TOOLS.has(t.name); }
 	if (mode === 'verify') { return READ_ONLY_TOOLS.has(t.name) || COMMAND_TOOLS.has(t.name); }
 	if (!s.agent.allowRunCommand && COMMAND_TOOLS.has(t.name)) { return false; }
@@ -118,17 +139,34 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 	const editCompletion = createEditCompletionTracker();
 	seedFileReadsFromHistory(o.history, fileReads);
 
+	const meter = (u: Parameters<UsageMeter['record']>[0] | undefined, purpose: string) => u && usage.record(u, { provider: transport.providerName, model: transport.modelName, purpose });
 	const toolCtx: ToolContext = {
 		folder: o.folder, index: o.index, requireEditApproval: s.agent.requireEditApproval, allowRunCommand: s.agent.allowRunCommand,
+		// plan / explain hide the edit tools from the model AND refuse them if a call arrives anyway
+		readOnly: o.mode === 'plan' || o.mode === 'explain',
 		progress: t => stream.progress(t), token,
+		// P3 harness: shell policy + sandbox, hooks, checkpoints, diagnostics, explore subagent
+		commandPolicy: { preApproved: s.agent.preApprovedCommands, denyPatterns: s.agent.denyCommandPatterns, autoApproveDetected: s.agent.autoApproveDetectedTestCommand },
+		sandbox: s.agent.sandbox,
+		hooks: loadHooks(o.folder.uri.fsPath, s.agent.hooks),
+		checkpoint: s.agent.checkpoints ? o.checkpoint : undefined,
+		diagnosticsSettleMs: s.agent.diagnosticsAfterEdit ? (o.diagnosticsSettleMs ?? 1_200) : undefined,
+		transport, onSubagentUsage: (u, purpose) => meter(u, purpose), log: o.log,
 	};
 	const tools = toolsForMode(o.mode, s);
-	const meter = (u: Parameters<UsageMeter['record']>[0] | undefined, purpose: string) => u && usage.record(u, { provider: transport.providerName, model: transport.modelName, purpose });
 
-	// stable system prompt: role + policy + workspace profile (cacheable prefix)
+	// stable system prompt: role + policy + project rules + workspace profile (cacheable prefix)
 	const profile = await o.index.getContextualProfile(o.activeFile).catch(() => undefined);
-	const stableSystem = [STABLE_SYSTEM, MODE_SYSTEM[o.mode], o.rules ?? '', profile?.profileText ? `<workspace_profile>\n${profile.profileText}\n</workspace_profile>` : '',
-		profile?.activeFile ? `Active file: ${profile.activeFile}\nRelated: ${profile.relatedFiles.slice(0, 12).join(', ')}\nTests: ${profile.tests.join(', ') || 'none'}` : ''].filter(Boolean).join('\n\n');
+	const fileRules = loadProjectRules(o.folder.uri.fsPath, o.activeFile);
+	if (fileRules.sources.length) { o.log(`project rules: ${fileRules.sources.join(', ')}`); }
+	const stableSystem = [STABLE_SYSTEM, MODE_SYSTEM[o.mode],
+		o.rules ?? '',
+		fileRules.text ? `<project_rules>\nFollow these project rules (${fileRules.sources.join(', ')}); they override the defaults above where they conflict.\n\n${fileRules.text}\n</project_rules>` : '',
+		profile?.profileText ? `<workspace_profile>\n${profile.profileText}\n</workspace_profile>` : '',
+		profile?.activeFile ? `Active file: ${profile.activeFile}\nRelated: ${profile.relatedFiles.slice(0, 12).join(', ')}\nTests: ${profile.tests.join(', ') || 'none'}` : '',
+		profile?.neighborhood ? `<active_file_neighborhood>\n${profile.neighborhood}\n</active_file_neighborhood>` : ''].filter(Boolean).join('\n\n');
+	// files whose one-hop neighbourhood has already been shown this run (the preamble before an edit)
+	const briefedFiles = new Set<string>(profile?.activeFile && profile.neighborhood ? [profile.activeFile] : []);
 
 	// 1. plan
 	let plan: PlanMessage | null = null;
@@ -152,18 +190,45 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 	let verified = false;
 	let stopped: AgentRunResult['stopped'] = 'done';
 	let editNudges = 0;
+	let emptyNudges = 0;
+	let retryAttempt = 0;
+	let aggressiveTrim = false;
+	let summaryFailedThisRun = false;
 
 	while (iterations < s.agent.maxIterations) {
 		if (token.isCancellationRequested) { stopped = 'cancelled'; break; }
 		iterations++;
 
-		// budget: compact stale tool results, trim oldest, keep the protected tail
+		// budget: summarise the middle of a long thread (model side-call), then compact stale tool
+		// results, trim oldest, keep the protected tail — the summary step is skipped on failure so
+		// trimming always still runs.
 		const before = estimateChatHistoryTokens({ chatMessages: history, systemMessage: stableSystem, aiInstructions: '' });
+		const effectiveWindow = Math.floor(transport.contextWindow * (s.agent.contextWindowRatio / 0.85));
+		if (s.agent.summarizeHistory && !summaryFailedThisRun) {
+			const callLLM: LLMCallPort = async req => {
+				const r = await transport.call({ systemMessage: req.systemMessage, messages: toTransportMessages(req.messages), maxOutputTokens: req.maxOutputTokens, signal: req.signal });
+				meter(r.usage, 'agent:summary');
+				return { text: r.text, usage: r.usage };
+			};
+			const sum = await summarizeThreadMiddle({
+				messages: history, callLLM, systemMessage: stableSystem, signal: abort.signal,
+				inputBudget: Math.floor(Math.max(1, effectiveWindow - transport.maxOutputTokens) * 0.85),
+				onSkip: reason => { if (/failed|returned nothing/.test(reason)) { summaryFailedThisRun = true; o.log(`summary skipped: ${reason}`); } },
+			});
+			if (sum.summarized) {
+				history.splice(0, history.length, ...sum.messages);
+				usage.recordSaved(Math.max(0, sum.tokensSaved));
+				o.log(`summary: replaced ${sum.replaced} messages, saved ≈${sum.tokensSaved} tokens`);
+				stream.progress('Summarised earlier turns to stay within the context budget');
+			}
+		}
 		const prepared = prepareMessagesForModel({
-			messages: history, contextWindow: Math.floor(transport.contextWindow * (s.agent.contextWindowRatio / 0.85)),
+			messages: history, contextWindow: effectiveWindow,
 			reservedOutputTokens: transport.maxOutputTokens, chatMode: 'agent', fileReads, systemMessage: stableSystem, providerName: transport.providerName,
+			forceAggressiveTrim: aggressiveTrim,
 		});
-		usage.recordSaved(Math.max(0, before - prepared.estimatedTokens));
+		usage.recordSaved(Math.max(0, estimateChatHistoryTokens({ chatMessages: history, systemMessage: stableSystem, aiInstructions: '' }) - prepared.estimatedTokens));
+		void before;
 		if (prepared.trimmed || prepared.compacted) { o.log(`budget: trimmed=${prepared.trimmed} compacted=${prepared.compacted} est=${prepared.estimatedTokens}`); }
 
 		// volatile hints (never in the cached prefix)
@@ -187,15 +252,43 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 			});
 		} catch (e) {
 			if (token.isCancellationRequested) { stopped = 'cancelled'; break; }
-			stream.markdown(`\n\n⚠️ model call failed: ${(e as Error).message}`);
-			o.log(`model error: ${(e as Error).stack ?? e}`);
+			const err: LLMErrorLike = { message: (e as Error).message ?? String(e), fullError: e instanceof Error ? e : null };
+			o.log(`model error (attempt ${retryAttempt + 1}): ${(e as Error).stack ?? e}`);
+			// transient (429 / 5xx / overflow / stall): wait and retry with a tighter budget; fatal (4xx auth, 404): stop
+			if (retryAttempt < getMaxLLMRetryAttempts(err)) {
+				retryAttempt++;
+				iterations--; // a retry is not a model turn
+				if (shouldForceAggressiveTrimOnRetry(err)) { aggressiveTrim = true; }
+				const delay = getLLMRetryDelayMs(err, retryAttempt, o.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
+				stream.progress(`model call failed (${err.message.split('\n')[0].slice(0, 80)}); retrying in ${Math.round(delay / 1000)}s…`);
+				await sleep(delay, abort.signal);
+				continue;
+			}
+			stream.markdown(`\n\n⚠️ model call failed: ${err.message}`);
 			stopped = 'error'; break;
 		}
+		retryAttempt = 0; aggressiveTrim = false;
 		meter(res.usage, `agent:${o.mode}`);
-		if (res.text) { history.push(assistantMsg(res.text)); }
-		if (res.stopReason === 'length' && res.toolCalls.some(tc => EDIT_TOOLS.has(tc.name))) { editCompletion.truncatedEditTool = true; }
+
+		// Always record the assistant turn when it carries tool calls — even with empty text — so the
+		// tool results that follow stay paired with it (sanitizeToolMessagePairing drops orphans).
+		if (res.text || res.toolCalls.length) { history.push(assistantMsg(res.text)); }
+		if (res.stopReason === 'length' && res.toolCalls.some(tc => EDIT_TOOLS.has(tc.name))) { markTruncatedEditTool(editCompletion); }
 
 		if (!res.toolCalls.length) {
+			// empty or cut-off response: ask to continue, a bounded number of times, instead of ending silently
+			if (!res.text.trim() || res.stopReason === 'length') {
+				if (emptyNudges < MAX_EMPTY_RESPONSE_NUDGES) {
+					emptyNudges++;
+					o.log(`empty/cut-off response (stop=${res.stopReason}); nudge ${emptyNudges}`);
+					history.push(userMsg(res.stopReason === 'length'
+						? 'Your previous message was cut off by the output limit. Continue exactly where you stopped; if you were about to edit, call edit_file with small blocks.'
+						: 'Your previous message was empty. Either call a tool to make progress or write the final answer now.'));
+					continue;
+				}
+				stream.markdown('\n\n⚠️ the model returned an empty response twice; stopping. Try rephrasing the request or use /plan first.');
+				break;
+			}
 			// one nudge if the user clearly asked for an edit but none happened
 			if (o.mode === 'agent' && editNudges < 1 && needsEditCompletion({ tracker: editCompletion, fileEditCounts, readOnlyCallCount: readCounts.total, userMessage: o.userPrompt, chatMode: 'agent' })) {
 				editNudges++;
@@ -230,7 +323,14 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 			stream.progress(describeCall(call));
 
 			const out = await executeTool(call.name, args, toolCtx);
-			const text = out.ok ? out.result : `ERROR: ${out.error}`;
+			let text = out.ok ? out.result : `ERROR: ${out.error}`;
+			// One hop before the edit: the first time a file is read in agent mode, append who depends on
+			// it (callers, subclasses, importers) so a signature change is made with its call sites in view.
+			if (out.ok && o.mode === 'agent' && call.name === 'read_file' && typeof args.filePath === 'string' && !briefedFiles.has(args.filePath)) {
+				briefedFiles.add(args.filePath);
+				const hood = await o.index.getEditNeighborhood(args.filePath).catch(() => '');
+				if (hood && !/no dependents or dependencies/.test(hood)) { text += `\n\n<dependents>\n${hood}\n</dependents>`; }
+			}
 			history.push(toolMsg(call, out.ok, text));
 			stream.markdown(`\n\n> ${out.ok ? '✅' : '❌'} \`${describeCall(call)}\`${out.ok ? '' : ` — ${out.error.split('\n')[0].slice(0, 160)}`}\n`);
 
@@ -245,12 +345,20 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 					trackFileEdit(fileEditCounts, call.name, { uri: URI.file(p) });
 					editedFiles.add(p);
 					verified = false;
+					// the file changed: an earlier read no longer reflects it, so a re-read must be allowed
+					invalidateFileRead(fileReads, URI.file(p));
 					stream.reference(vscode.Uri.joinPath(o.folder.uri, p));
 				}
 				if (plan) { plan = markPlanItemDoneForTool(plan, call.name, { ...args, uri: URI.file(String(args.filePath ?? args.path ?? '')) } as never); }
 			} else {
 				consecutiveFails++;
 				if (EDIT_TOOLS.has(call.name) && /rejected/.test(out.error)) { /* developer said no — not a failure of the model */ consecutiveFails--; }
+				if (EDIT_TOOLS.has(call.name)) {
+					// a failed search block usually means the model's copy of the file is wrong: let it re-read
+					const p = String(args.filePath ?? args.path ?? '');
+					if (p && out.meta?.editFailed) { invalidateFileRead(fileReads, URI.file(p)); }
+					if (out.meta?.truncated) { markTruncatedEditTool(editCompletion); }
+				}
 				if (consecutiveFails >= 3) { stream.markdown('\n\n⚠️ three consecutive tool failures — stopping.'); stopped = 'tool_fail_cap'; break; }
 			}
 		}
@@ -267,6 +375,10 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 /* ───────────────────────────── helpers ───────────────────────────── */
 
 const numOrNull = (v: unknown): number | null => (v === undefined || v === null || v === '') ? null : Number(v);
+const sleep = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => {
+	const t = setTimeout(resolve, ms);
+	signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });
+});
 const stringifyParams = (args: Record<string, unknown>): RawToolParamsObj => Object.fromEntries(Object.entries(args).map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)]));
 
 function describeCall(call: ToolCall): string {

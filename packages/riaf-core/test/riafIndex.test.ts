@@ -103,8 +103,9 @@ describe('RiafIndex end-to-end on the sample repo', () => {
 		const symbols = await index.searchSymbols('OrderService');
 		expect(symbols.some(s => s.name === 'OrderService' && s.kind === 'class' && s.filePath === 'src/orderService.ts')).toBe(true);
 		const outline = await index.getFileOutline('src/models/order.ts');
-		// (the regex chunker has no `enum` boundary, so OrderStatus is not an outline entry)
-		expect(outline.map(s => s.name)).toEqual(expect.arrayContaining(['Order', 'isOpenOrder']));
+		// enums and methods are outline entries now that the AST chunker is in place
+		expect(outline.map(s => s.name)).toEqual(expect.arrayContaining(['Order', 'isOpenOrder', 'OrderStatus']));
+		expect((await index.searchSymbols('capturePayment')).some(s => s.filePath === 'src/orderService.ts' && s.kind === 'function')).toBe(true);
 	});
 
 	it('getGraph returns resolved import edges', async () => {

@@ -1,11 +1,21 @@
 import * as vscode from 'vscode';
 import { createHash } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { RiafIndex, type IndexProgress, type RepoIntelligenceIndexingStats } from '@bosch-mps/riaf-core';
 import { readSettings, type RiafSettings } from './config.js';
 import type { ModelTransport } from './modelTransport.js';
 import { getGatewayHeaders } from './modelTransport.js';
+
+/** VS Code ships ripgrep under its app root; use it so `grep` works without anything on PATH. */
+function bundledRipgrep(): string | undefined {
+	const bin = process.platform === 'win32' ? 'rg.exe' : 'rg';
+	const candidates = [
+		join(vscode.env.appRoot, 'node_modules', '@vscode', 'ripgrep', 'bin', bin),
+		join(vscode.env.appRoot, 'node_modules.asar.unpacked', '@vscode', 'ripgrep', 'bin', bin),
+	];
+	return candidates.find(p => existsSync(p));
+}
 
 /**
  * One RiafIndex per workspace folder, a status-bar item, and the reindex command.
@@ -78,6 +88,9 @@ export class IndexManager implements vscode.Disposable {
 			workspaceRoot: folder.uri.fsPath,
 			dbPath: this.dbPathFor(folder),
 			excludeGlobs: s.index.excludeGlobs,
+			respectGitignore: s.index.respectGitignore,
+			treeSitter: s.index.treeSitter,
+			ripgrepPath: bundledRipgrep(),
 			embeddings: this._embeddingConfig(s),
 			summarize: this._summarizeHook(),
 			log: m => this.log(m),
@@ -94,7 +107,8 @@ export class IndexManager implements vscode.Disposable {
 			enabled: true,
 			url: `${s.gateway.url}/embeddings`,
 			model: s.embeddings.model,
-			headers: getGatewayHeaders(),
+			// resolved per request so a refreshed SSO token is picked up without reopening the index
+			headers: () => getGatewayHeaders(),
 		};
 	}
 

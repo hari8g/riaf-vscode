@@ -87,6 +87,7 @@ function Gateway({ get, set, state, call }: P & { s: Settings; state: HostRespon
 				<TextInput mono value={JSON.stringify(get('gateway.headers', {}))} onChange={v => { try { void set('gateway.headers', JSON.parse(v || '{}')); } catch { /* ignore invalid */ } }} />
 			</Row>
 			<Row label="Prompt caching" desc="Anthropic cache_control breakpoints when the gateway routes to Claude"><Toggle value={get('gateway.promptCache', true)} onChange={v => set('gateway.promptCache', v)} /></Row>
+			<Row label="Stream responses" desc="Show gateway text as it is generated. Turn off for gateways that reject stream=true."><Toggle value={get('gateway.stream', true)} onChange={v => set('gateway.stream', v)} /></Row>
 			<Row label="Connection">
 				<div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
 					<Button kind="primary" onClick={test} disabled={testing}>{testing ? 'Testing…' : 'Test connection'}</Button>
@@ -117,6 +118,8 @@ function RepoIntelligence({ get, set, index, call }: P & { index?: IndexStatus; 
 			</div>
 			<Row label="Index on startup"><Toggle value={get('index.autoIndexOnStartup', true)} onChange={v => set('index.autoIndexOnStartup', v)} /></Row>
 			<Row label="Watch for changes" desc="Incremental updates as files are saved"><Toggle value={get('index.watch', true)} onChange={v => set('index.watch', v)} /></Row>
+			<Row label="Honor .gitignore" desc="Skip files matched by the root and nested gitignore files"><Toggle value={get('index.respectGitignore', true)} onChange={v => set('index.respectGitignore', v)} /></Row>
+			<Row label="Tree-sitter chunking" desc="Chunk and extract symbols from the syntax tree. Falls back to regex per language when a grammar is missing."><Toggle value={get('index.treeSitter', true)} onChange={v => set('index.treeSitter', v)} /></Row>
 			<Row label="Exclude patterns" desc="gitignore-style, one per line" wide>
 				<TextArea mono rows={5} value={get<string[]>('index.excludeGlobs', []).join('\n')} onChange={v => set('index.excludeGlobs', v.split('\n').map(x => x.trim()).filter(Boolean))} />
 			</Row>
@@ -140,6 +143,10 @@ function Agent({ get, set }: P) {
 			<Row label="Max iterations" desc="Hard cap on tool-call rounds per request"><NumberInput min={1} max={100} value={get('agent.maxIterations', 25)} onChange={v => set('agent.maxIterations', v)} /></Row>
 			<Row label="Exploration budget" desc="Read/search/list calls before the agent is nudged to act"><NumberInput min={1} max={100} value={get('agent.maxReadOnlyCalls', 12)} onChange={v => set('agent.maxReadOnlyCalls', v)} /></Row>
 			<Row label="Context window usage" desc="Fraction of the model window filled before trimming (0.3–0.95)"><NumberInput min={0.3} max={0.95} step={0.05} value={get('agent.contextWindowRatio', 0.85)} onChange={v => set('agent.contextWindowRatio', v)} /></Row>
+			<Row label="Diagnostics after edit" desc="Wait briefly for the language server and return that file's errors in the tool result"><Toggle value={get('agent.diagnosticsAfterEdit', true)} onChange={v => set('agent.diagnosticsAfterEdit', v)} /></Row>
+			<Row label="Summarise long threads" desc="Replace the oldest turns with a summary past ~60% of the budget. Falls back to dropping them if the summary call fails."><Toggle value={get('agent.summarizeHistory', true)} onChange={v => set('agent.summarizeHistory', v)} /></Row>
+			<Row label="Explore subagent" desc="A read-only side loop that searches and reads, then returns a short report"><Toggle value={get('agent.exploreSubagent', true)} onChange={v => set('agent.exploreSubagent', v)} /></Row>
+			<Row label="Checkpoints" desc="Snapshot files before the agent edits them so RIAF: Rewind can restore a turn"><Toggle value={get('agent.checkpoints', true)} onChange={v => set('agent.checkpoints', v)} /></Row>
 		</Section>
 	);
 }
@@ -148,8 +155,23 @@ function Tools({ get, set }: P) {
 	return (
 		<Section id="tools" title="Tools" desc="What the agent may do without asking. Reads and searches never ask.">
 			<Row label="Edits need approval" desc="Show each edit as a diff to accept or reject"><Toggle value={get('agent.requireEditApproval', true)} onChange={v => set('agent.requireEditApproval', v)} /></Row>
-			<Row label="Allow shell commands" desc="run_command / run_tests (each run still asks)"><Toggle value={get('agent.allowRunCommand', true)} onChange={v => set('agent.allowRunCommand', v)} /></Row>
-			<Note>Read-only tools (search_codebase, read_file, get_file_outline, …) are also exposed to Copilot Chat as <code>#riaf</code>, <code>#riafContext</code> and <code>#riafSymbols</code>.</Note>
+			<Row label="Allow shell commands" desc="run_command / run_tests. Commands not on the allowlist still ask."><Toggle value={get('agent.allowRunCommand', true)} onChange={v => set('agent.allowRunCommand', v)} /></Row>
+			<Row label="Auto-approve detected tests" desc="Run the detected test, typecheck and lint commands without a confirmation dialog"><Toggle value={get('agent.autoApproveDetectedTestCommand', false)} onChange={v => set('agent.autoApproveDetectedTestCommand', v)} /></Row>
+			<Row label="Workspace sandbox" desc="Where shell commands may write. Auto uses macOS Seatbelt when sandbox-exec is available.">
+				<Select value={get<'auto' | 'policy' | 'seatbelt' | 'off'>('agent.sandbox', 'auto')} onChange={v => set('agent.sandbox', v)} options={[
+					{ value: 'auto', label: 'Auto' }, { value: 'policy', label: 'Policy (lexical check)' }, { value: 'seatbelt', label: 'macOS Seatbelt' }, { value: 'off', label: 'Off' },
+				]} />
+			</Row>
+			<Row label="Pre-approved commands" desc="One per line. A prefix matches at a token boundary, e.g. npm test. Every segment of a chain must match." wide>
+				<TextArea mono rows={4} value={get<string[]>('agent.preApprovedCommands', []).join('\n')} onChange={v => set('agent.preApprovedCommands', v.split('\n').map(x => x.trim()).filter(Boolean))} placeholder={'npm test\nnpx vitest'} />
+			</Row>
+			<Row label="Deny patterns" desc="Extra regular expressions. A matching command is always refused. Built-ins already cover rm -rf /, sudo, force push and similar." wide>
+				<TextArea mono rows={3} value={get<string[]>('agent.denyCommandPatterns', []).join('\n')} onChange={v => set('agent.denyCommandPatterns', v.split('\n').map(x => x.trim()).filter(Boolean))} placeholder={'\\bnpm\\s+publish\\b'} />
+			</Row>
+			<Row label="Hooks" desc='JSON merged with .riaf/hooks.json: { "preTool": [{ "matcher", "command" }], "postEdit": [...] }. Exit code 2 or {"decision":"block"} blocks the call.' wide>
+				<TextArea mono rows={5} value={JSON.stringify(get('agent.hooks', {}), null, 2)} onChange={v => { try { void set('agent.hooks', JSON.parse(v || '{}')); } catch { /* wait for valid JSON */ } }} />
+			</Row>
+			<Note>Read-only tools (search_codebase, grep, find_references, get_neighbors, …) are also exposed to Copilot Chat as <code>#riaf</code>, <code>#riafContext</code> and <code>#riafSymbols</code>.</Note>
 		</Section>
 	);
 }

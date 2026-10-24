@@ -162,6 +162,10 @@ export type UCGGraphMetrics = {
 	cycles: string[][];
 	hotFiles: string[];
 	externalDeps: Record<string, number>;
+	/** Longest distance (in import hops) from an entry point to any reachable file. */
+	maxDepth: number;
+	/** Files with neither importers nor internal imports. */
+	orphanFiles: string[];
 	computedAt: number;
 };
 

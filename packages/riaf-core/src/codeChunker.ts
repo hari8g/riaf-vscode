@@ -7,6 +7,7 @@ import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { CodeChunk, CodeChunkType, ExtractedSymbol, FileMetadataEntry } from './repoIntelligenceTypes.js';
+import { AstDefinition, flattenOutline, isImportOnlyBlock, parseOutline, TREE_SITTER_LANGUAGES } from './treeSitterChunker.js';
 
 const MAX_FILE_CHARS = 300_000;
 const MAX_CHUNK_LINES = 80;
@@ -63,7 +64,7 @@ const SYMBOL_PATTERNS: Record<string, SymbolPattern[]> = {
 };
 
 export const supportsSymbolExtraction = (language: string | null | undefined): boolean => {
-	return !!language && !SKIP_LANGUAGES.has(language) && !!SYMBOL_PATTERNS[language];
+	return !!language && !SKIP_LANGUAGES.has(language) && (!!SYMBOL_PATTERNS[language] || TREE_SITTER_LANGUAGES.includes(language));
 };
 
 type BoundaryPattern = { regex: RegExp; chunkType: CodeChunkType };
@@ -161,6 +162,66 @@ const splitAtBlankLines = (lines: string[], startIdx: number, endIdx: number, ma
 	return spans;
 };
 
+type Span = { start: number; end: number; chunkType: CodeChunkType };
+
+/**
+ * Turn an AST outline into chunk spans: every top-level definition is a chunk; the code between
+ * definitions (imports, module-level statements) becomes `block` chunks; definitions longer than
+ * MAX_CHUNK_LINES are split at their members (methods) and, failing that, at blank lines.
+ */
+const spansFromOutline = (defs: AstDefinition[], lines: string[]): Span[] => {
+	const spans: Span[] = [];
+	const total = lines.length;
+	const pushGap = (start: number, end: number) => { if (end >= start) spans.push({ start, end, chunkType: 'block' }); };
+	const pushDef = (def: AstDefinition) => {
+		const len = def.endLine - def.startLine + 1;
+		if (len <= MAX_CHUNK_LINES) { spans.push({ start: def.startLine, end: def.endLine, chunkType: def.chunkType }); return; }
+		const members = def.children.filter(c => c.startLine > def.startLine && c.endLine <= def.endLine).sort((a, b) => a.startLine - b.startLine);
+		if (members.length === 0) {
+			for (const sub of splitAtBlankLines(lines, def.startLine - 1, def.endLine - 1, MAX_CHUNK_LINES)) {
+				spans.push({ start: sub.start + 1, end: sub.end + 1, chunkType: def.chunkType });
+			}
+			return;
+		}
+		// header (signature + fields) keeps the parent's chunk type so "class" chunks still exist;
+		// a header too short to stand alone is merged into the first member so the class name is never lost
+		let cursor = def.startLine;
+		let pendingHeader: Span | null = null;
+		for (const m of members) {
+			if (m.startLine > cursor) {
+				const header: Span = { start: cursor, end: m.startLine - 1, chunkType: cursor === def.startLine ? def.chunkType : 'block' };
+				const nonEmpty = lines.slice(header.start - 1, header.end).filter(l => l.trim()).length;
+				if (cursor === def.startLine && nonEmpty < MIN_NON_EMPTY_LINES) pendingHeader = header;
+				else spans.push(header);
+			}
+			const before = spans.length;
+			pushDef(m);
+			if (pendingHeader && spans.length > before) {
+				spans[before] = { start: pendingHeader.start, end: spans[before].end, chunkType: pendingHeader.chunkType };
+				pendingHeader = null;
+			}
+			cursor = m.endLine + 1;
+		}
+		if (cursor <= def.endLine) spans.push({ start: pendingHeader?.start ?? cursor, end: def.endLine, chunkType: pendingHeader ? pendingHeader.chunkType : 'block' });
+	};
+
+	let cursor = 1;
+	for (const def of defs) {
+		if (def.startLine < cursor) continue;           // overlapping (should not happen at one level)
+		pushGap(cursor, def.startLine - 1);
+		pushDef(def);
+		cursor = def.endLine + 1;
+	}
+	pushGap(cursor, total);
+	return spans
+		// import-only preambles carry nothing worth retrieving (the import graph has them)
+		.filter(s => !(s.chunkType === 'block' && isImportOnlyBlock(lines.slice(s.start - 1, s.end).join('\n'))))
+		// a gap longer than the cap is split too (module-level statements, config tables)
+		.flatMap(s => s.end - s.start + 1 > MAX_CHUNK_LINES && s.chunkType === 'block'
+			? splitAtBlankLines(lines, s.start - 1, s.end - 1, MAX_CHUNK_LINES).map(sub => ({ start: sub.start + 1, end: sub.end + 1, chunkType: 'block' as const }))
+			: [s]);
+};
+
 export const chunkFile = (
 	workspaceHash: string,
 	filePath: string,
@@ -171,10 +232,16 @@ export const chunkFile = (
 	if (content.length > MAX_FILE_CHARS) return [];
 
 	const lines = content.split('\n');
+	const spans: Span[] = [];
+
+	const outline = parseOutline(content, language, filePath);
+	if (outline && outline.length > 0) {
+		spans.push(...spansFromOutline(outline, lines));
+		return spansToChunks(workspaceHash, filePath, lines, spans);
+	}
+
 	const patterns = LANGUAGE_BOUNDARIES[language] ?? [];
 	const boundaries = findBoundaryLines(content, patterns);
-
-	const spans: { start: number; end: number; chunkType: CodeChunkType }[] = [];
 
 	if (boundaries.length === 0) {
 		const endLine = Math.min(lines.length, FALLBACK_FILE_LINES);
@@ -193,7 +260,10 @@ export const chunkFile = (
 			}
 		}
 	}
+	return spansToChunks(workspaceHash, filePath, lines, spans);
+};
 
+const spansToChunks = (workspaceHash: string, filePath: string, lines: string[], spans: Span[]): CodeChunk[] => {
 	const chunks: CodeChunk[] = [];
 	for (const span of spans) {
 		const chunkText = lines.slice(span.start - 1, span.end).join('\n');
@@ -236,8 +306,28 @@ export const extractSymbolsFromFile = (
 		return [];
 	}
 
-	const patterns = SYMBOL_PATTERNS[language!];
 	const lines = content.split('\n');
+	const outline = parseOutline(content, language, filePath);
+	if (outline) {
+		return flattenOutline(outline).map(def => {
+			const symbolText = lines.slice(def.startLine - 1, def.endLine).join('\n');
+			return {
+				name: def.name,
+				kind: def.kind,
+				filePath,
+				startLine: def.startLine,
+				endLine: def.endLine,
+				signature: def.parentName ? `${def.parentName}.${def.signature}` : def.signature,
+				docstring: def.docstring,
+				isExported: def.isExported,
+				contentHash: createHash('sha256').update(symbolText).digest('hex').slice(0, 16),
+			};
+		});
+	}
+
+	// regex fallback (grammar not loaded or language without one)
+	const patterns = SYMBOL_PATTERNS[language!];
+	if (!patterns) return [];
 	const symbols: ExtractedSymbol[] = [];
 	const boundaries = findBoundaryLines(content, LANGUAGE_BOUNDARIES[language!] ?? []);
 
