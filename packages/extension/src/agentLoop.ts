@@ -28,6 +28,8 @@ export interface AgentRunOptions {
 	history: ChatMessage[];
 	/** Workspace-relative path of the active editor, for the contextual profile. */
 	activeFile?: string;
+	/** Contents of .riafrules (project rules), already wrapped by rulesForPrompt. */
+	rules?: string;
 	stream: vscode.ChatResponseStream;
 	token: vscode.CancellationToken;
 	log: (msg: string) => void;
@@ -125,7 +127,7 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 
 	// stable system prompt: role + policy + workspace profile (cacheable prefix)
 	const profile = await o.index.getContextualProfile(o.activeFile).catch(() => undefined);
-	const stableSystem = [STABLE_SYSTEM, MODE_SYSTEM[o.mode], profile?.profileText ? `<workspace_profile>\n${profile.profileText}\n</workspace_profile>` : '',
+	const stableSystem = [STABLE_SYSTEM, MODE_SYSTEM[o.mode], o.rules ?? '', profile?.profileText ? `<workspace_profile>\n${profile.profileText}\n</workspace_profile>` : '',
 		profile?.activeFile ? `Active file: ${profile.activeFile}\nRelated: ${profile.relatedFiles.slice(0, 12).join(', ')}\nTests: ${profile.tests.join(', ') || 'none'}` : ''].filter(Boolean).join('\n\n');
 
 	// 1. plan

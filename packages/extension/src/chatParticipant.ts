@@ -5,6 +5,7 @@ import { runAgent, type AgentMode } from './agentLoop.js';
 import { readSettings } from './config.js';
 import type { IndexManager } from './indexManager.js';
 import { createTransport } from './modelTransport.js';
+import { readRules, rulesForPrompt } from './rules.js';
 import type { UsageMeter } from './usage.js';
 
 /** Per-chat-thread agent history, keyed by the first request's id (VS Code gives no thread id). */
@@ -54,8 +55,9 @@ export function registerChatParticipant(ctx: vscode.ExtensionContext, indexes: I
 		}).filter(Boolean);
 		const prompt = [request.prompt, ...refs].join('\n');
 
+		const rules = rulesForPrompt(await readRules(folder));
 		const result = await runAgent({
-			transport, index, folder, settings, usage, mode, userPrompt: prompt, history, activeFile, stream, token, log: m => indexes.log(m),
+			transport, index, folder, settings, usage, mode, userPrompt: prompt, history, activeFile, rules, stream, token, log: m => indexes.log(m),
 		});
 		threads.set(key, result.history);
 		return { metadata: { iterations: result.iterations, editedFiles: result.editedFiles, stopped: result.stopped } };

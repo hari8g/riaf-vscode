@@ -16,6 +16,9 @@ authenticates to an internal LLM gateway with the SSO VS Code already holds.
 | `@riaf` agent | `@riaf add retry logic to the payment client` → plan, gather, edit (diff to accept), verify. Slash commands: `/plan`, `/explain`, `/verify`, `/reindex`. |
 | Claude Code | Run **RIAF: Set up Claude Code** once per repo. It writes `.mcp.json` (riaf MCP server) and `.claude/commands` (`/riaf-plan`, `/riaf-verify`, `/riaf-context`) plus rules in `CLAUDE.md`. |
 
+## Settings panel
+**RIAF: Open Settings** (or click the `⚡ … saved` status-bar item) opens a panel with: Gateway (URL, model, SSO, *Test connection*), Repository Intelligence (index status, reindex, excludes, embeddings), Agent, Tools, Rules (`.riafrules`, shared with the team and with Claude Code), Usage (session + all-time tokens, cache hits, tokens saved, cost) and Claude Code setup status. Every value is an ordinary `riaf.*` setting, so the native Settings UI shows the same things.
+
 ## Settings that matter
 - `riaf.gateway.url` / `riaf.gateway.model` — leave empty to borrow Copilot's models and SSO; set to use the internal gateway (`riaf.gateway.auth` = `microsoft-sso` by default).
 - `riaf.embeddings.enabled` — off = BM25-only, zero network; on = hybrid retrieval via the gateway's `/embeddings`.

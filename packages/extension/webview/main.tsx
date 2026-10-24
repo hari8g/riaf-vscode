@@ -1,0 +1,214 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { onPush, request, type HostResponse, type IndexStatus, type UsageTotals } from './bridge.js';
+import { Badge, Button, Note, NumberInput, Row, Section, Select, StatCard, TextArea, TextInput, Toggle, fmtTokens, fmtUsd } from './ui.js';
+
+/* ───────────────────────────── state ───────────────────────────── */
+
+type Settings = Record<string, unknown>;
+const TABS = [
+	['gateway', 'Gateway'], ['index', 'Repository Intelligence'], ['agent', 'Agent'], ['tools', 'Tools'],
+	['rules', 'Rules'], ['usage', 'Usage'], ['claude', 'Claude Code'],
+] as const;
+type Tab = typeof TABS[number][0];
+
+function useHost() {
+	const [state, setState] = useState<HostResponse>({});
+	const merge = useCallback((r: HostResponse) => setState(s => ({ ...s, ...r })), []);
+	useEffect(() => { void request({ type: 'getAll' }).then(merge); return onPush(merge); }, [merge]);
+	const set = useCallback(async (key: string, value: unknown) => {
+		setState(s => ({ ...s, settings: { ...(s.settings ?? {}), [key]: value } }));   // optimistic
+		merge(await request({ type: 'set', key, value }));
+	}, [merge]);
+	const call = useCallback(async (req: Parameters<typeof request>[0]) => merge(await request(req)), [merge]);
+	return { state, set, call };
+}
+
+/* ───────────────────────────── app ───────────────────────────── */
+
+function App() {
+	const { state, set, call } = useHost();
+	const s: Settings = state.settings ?? {};
+	const get = <T,>(k: string, d: T): T => (s[k] as T) ?? d;
+	const [tab, setTab] = useState<Tab | 'all'>('all');
+	const show = (t: Tab) => tab === 'all' || tab === t;
+
+	return (
+		<div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', minHeight: '100vh', fontSize: 13 }}>
+			<nav style={{ padding: '20px 12px', borderRight: '1px solid var(--vscode-editorGroup-border)', position: 'sticky', top: 0, alignSelf: 'start', height: '100vh', boxSizing: 'border-box' }}>
+				<div style={{ fontWeight: 700, fontSize: 15, marginBottom: 14 }}>RIAF Settings</div>
+				{[['all', 'All'] as const, ...TABS].map(([id, label]) => (
+					<div key={id} onClick={() => setTab(id as Tab | 'all')}
+						style={{ padding: '5px 8px', borderRadius: 3, cursor: 'pointer', marginBottom: 2, background: tab === id ? 'var(--vscode-list-activeSelectionBackground)' : 'transparent', color: tab === id ? 'var(--vscode-list-activeSelectionForeground)' : 'inherit' }}>
+						{label}
+					</div>
+				))}
+				<div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 6 }}>
+					<Button small onClick={() => call({ type: 'openNativeSettings' })}>All settings (native UI)</Button>
+					<Button small onClick={() => call({ type: 'openOutput' })}>Open RIAF log</Button>
+				</div>
+			</nav>
+			<main style={{ padding: '20px 28px', maxWidth: 860 }}>
+				{state.error && <Note kind="warn">{state.error}</Note>}
+				{show('gateway') && <Gateway s={s} get={get} set={set} state={state} call={call} />}
+				{show('index') && <RepoIntelligence get={get} set={set} index={state.index} call={call} />}
+				{show('agent') && <Agent get={get} set={set} />}
+				{show('tools') && <Tools get={get} set={set} />}
+				{show('rules') && <Rules rules={state.rules ?? ''} path={state.rulesPath} call={call} />}
+				{show('usage') && <Usage usage={state.usage} transportId={state.transportId} call={call} />}
+				{show('claude') && <ClaudeCode status={state.claudeCode} call={call} />}
+			</main>
+		</div>
+	);
+}
+
+/* ───────────────────────────── sections ───────────────────────────── */
+
+type P = { get: <T,>(k: string, d: T) => T; set: (k: string, v: unknown) => Promise<void> };
+
+function Gateway({ get, set, state, call }: P & { s: Settings; state: HostResponse; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+	const url = get('gateway.url', '');
+	const [testing, setTesting] = useState(false);
+	const test = async () => { setTesting(true); try { await call({ type: 'testConnection' }); } finally { setTesting(false); } };
+	const c = state.connection;
+	return (
+		<Section id="gateway" title="Gateway" desc="Where the agent's model calls go. Leave the URL empty to borrow the models (and sign-in) that Copilot already provides in this VS Code.">
+			{!url && <Note>Using Copilot's models via <code>vscode.lm</code>{state.models?.length ? ` — available: ${state.models.join(', ')}` : ' — none detected yet (sign in to Copilot, or configure a gateway below)'}.</Note>}
+			<Row label="Gateway URL" desc="OpenAI-compatible base URL, e.g. https://llm-gateway.internal/v1"><TextInput mono value={url} onChange={v => set('gateway.url', v)} placeholder="https://…/v1" /></Row>
+			<Row label="Chat model" desc="Model id as the gateway knows it"><TextInput mono value={get('gateway.model', '')} onChange={v => set('gateway.model', v)} placeholder="anthropic.claude-sonnet-4-5" /></Row>
+			<Row label="Authentication" desc="SSO uses VS Code's built-in sign-in; no API keys are stored.">
+				<Select value={get('gateway.auth', 'microsoft-sso')} onChange={v => set('gateway.auth', v)} options={[
+					{ value: 'microsoft-sso', label: 'Microsoft (Entra ID) SSO' }, { value: 'github-sso', label: 'GitHub SSO' }, { value: 'header', label: 'Static headers' }, { value: 'none', label: 'None' }]} />
+			</Row>
+			<Row label="SSO scopes" desc="Comma-separated. For a gateway registered in Entra use its API scope, e.g. api://<app-id>/.default">
+				<TextInput mono value={get<string[]>('gateway.ssoScopes', []).join(', ')} onChange={v => set('gateway.ssoScopes', v.split(',').map(x => x.trim()).filter(Boolean))} />
+			</Row>
+			<Row label="Extra headers" desc="JSON object sent with every request">
+				<TextInput mono value={JSON.stringify(get('gateway.headers', {}))} onChange={v => { try { void set('gateway.headers', JSON.parse(v || '{}')); } catch { /* ignore invalid */ } }} />
+			</Row>
+			<Row label="Prompt caching" desc="Anthropic cache_control breakpoints when the gateway routes to Claude"><Toggle value={get('gateway.promptCache', true)} onChange={v => set('gateway.promptCache', v)} /></Row>
+			<Row label="Connection">
+				<div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+					<Button kind="primary" onClick={test} disabled={testing}>{testing ? 'Testing…' : 'Test connection'}</Button>
+					{c && <Badge ok={c.ok} text={`${c.message}${c.latencyMs ? ` (${c.latencyMs} ms)` : ''}`} />}
+				</div>
+			</Row>
+		</Section>
+	);
+}
+
+function RepoIntelligence({ get, set, index, call }: P & { index?: IndexStatus; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+	const [busy, setBusy] = useState(false);
+	const reindex = async (force: boolean) => { setBusy(true); try { await call({ type: 'reindex', force }); } finally { setBusy(false); } };
+	return (
+		<Section id="index" title="Repository Intelligence" desc="The RIAF index: chunks, symbols and the import graph that power search for Copilot, @riaf and Claude Code.">
+			<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+				<StatCard label="Status" value={index ? (index.indexed ? 'Indexed' : 'Not indexed') : '…'} sub={index?.folder} />
+				<StatCard label="Files" value={String(index?.files ?? 0)} />
+				<StatCard label="Chunks" value={fmtTokens(index?.chunks ?? 0)} />
+				<StatCard label="Symbols" value={fmtTokens(index?.symbols ?? 0)} />
+				<StatCard label="Last indexed" value={index?.lastIndexedAt ? new Date(index.lastIndexedAt).toLocaleTimeString() : '—'} sub={index?.lastIndexedAt ? new Date(index.lastIndexedAt).toLocaleDateString() : undefined} />
+			</div>
+			<div style={{ display: 'flex', gap: 8 }}>
+				<Button kind="primary" disabled={busy} onClick={() => reindex(false)}>{busy ? 'Indexing…' : 'Reindex (incremental)'}</Button>
+				<Button disabled={busy} onClick={() => reindex(true)}>Full rebuild</Button>
+				<Button onClick={() => call({ type: 'openReport' })}>Indexing report</Button>
+				<Button onClick={() => call({ type: 'openGraph' })}>Context graph</Button>
+			</div>
+			<Row label="Index on startup"><Toggle value={get('index.autoIndexOnStartup', true)} onChange={v => set('index.autoIndexOnStartup', v)} /></Row>
+			<Row label="Watch for changes" desc="Incremental updates as files are saved"><Toggle value={get('index.watch', true)} onChange={v => set('index.watch', v)} /></Row>
+			<Row label="Exclude patterns" desc="gitignore-style, one per line" wide>
+				<TextArea mono rows={5} value={get<string[]>('index.excludeGlobs', []).join('\n')} onChange={v => set('index.excludeGlobs', v.split('\n').map(x => x.trim()).filter(Boolean))} />
+			</Row>
+			<Row label="Semantic embeddings" desc="Hybrid BM25 + embeddings via the gateway's /embeddings. Off = keyword-only, fully offline.">
+				<div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+					<Toggle value={get('embeddings.enabled', false)} onChange={v => set('embeddings.enabled', v)} />
+					{get('embeddings.enabled', false) && !get('gateway.url', '') && <Badge warn text="needs a gateway URL" />}
+				</div>
+			</Row>
+			<Row label="Embedding model"><TextInput mono value={get('embeddings.model', '')} onChange={v => set('embeddings.model', v)} /></Row>
+			{index?.dbPath && <div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>DB: <code>{index.dbPath}</code></div>}
+		</Section>
+	);
+}
+
+function Agent({ get, set }: P) {
+	return (
+		<Section id="agent" title="Agent" desc="How @riaf runs its plan → gather → edit → verify loop.">
+			<Row label="Generate a plan first" desc="≤300-token plan, ticked off as tools run"><Toggle value={get('agent.generatePlan', true)} onChange={v => set('agent.generatePlan', v)} /></Row>
+			<Row label="Auto-verify after edits" desc="Runs the detected test/typecheck command once and feeds results back"><Toggle value={get('agent.autoVerify', true)} onChange={v => set('agent.autoVerify', v)} /></Row>
+			<Row label="Max iterations" desc="Hard cap on tool-call rounds per request"><NumberInput min={1} max={100} value={get('agent.maxIterations', 25)} onChange={v => set('agent.maxIterations', v)} /></Row>
+			<Row label="Exploration budget" desc="Read/search/list calls before the agent is nudged to act"><NumberInput min={1} max={100} value={get('agent.maxReadOnlyCalls', 12)} onChange={v => set('agent.maxReadOnlyCalls', v)} /></Row>
+			<Row label="Context window usage" desc="Fraction of the model window filled before trimming (0.3–0.95)"><NumberInput min={0.3} max={0.95} step={0.05} value={get('agent.contextWindowRatio', 0.85)} onChange={v => set('agent.contextWindowRatio', v)} /></Row>
+		</Section>
+	);
+}
+
+function Tools({ get, set }: P) {
+	return (
+		<Section id="tools" title="Tools" desc="What the agent may do without asking. Reads and searches never ask.">
+			<Row label="Edits need approval" desc="Show each edit as a diff to accept or reject"><Toggle value={get('agent.requireEditApproval', true)} onChange={v => set('agent.requireEditApproval', v)} /></Row>
+			<Row label="Allow shell commands" desc="run_command / run_tests (each run still asks)"><Toggle value={get('agent.allowRunCommand', true)} onChange={v => set('agent.allowRunCommand', v)} /></Row>
+			<Note>Read-only tools (search_codebase, read_file, get_file_outline, …) are also exposed to Copilot Chat as <code>#riaf</code>, <code>#riafContext</code> and <code>#riafSymbols</code>.</Note>
+		</Section>
+	);
+}
+
+function Rules({ rules, path, call }: { rules: string; path?: string; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+	const [text, setText] = useState(rules);
+	useEffect(() => setText(rules), [rules]);
+	const dirty = text !== rules;
+	return (
+		<Section id="rules" title="Rules" desc="Project rules the agent always sees (coding conventions, forbidden areas, how to run things). Stored in the repo so the whole team shares them.">
+			<TextArea mono rows={12} value={text} onChange={setText} placeholder={'# Example\n- Use the shared logger, never console.log\n- Services live under src/services; tests beside them as *.test.ts\n- Run `npm run typecheck` before tests'} />
+			<div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+				<Button kind="primary" disabled={!dirty} onClick={() => call({ type: 'setRules', text })}>Save</Button>
+				<Button disabled={!dirty} onClick={() => setText(rules)}>Revert</Button>
+				<span style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>{path ?? '.riafrules'} · also read by Claude Code via CLAUDE.md after "Set up Claude Code"</span>
+			</div>
+		</Section>
+	);
+}
+
+function Usage({ usage, transportId, call }: { usage?: { session: UsageTotals; allTime: UsageTotals }; transportId?: string; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+	const s = usage?.session, a = usage?.allTime;
+	const saving = useMemo(() => s && s.inputTokens + s.savedTokens > 0 ? Math.round(100 * s.savedTokens / (s.inputTokens + s.savedTokens)) : 0, [s]);
+	return (
+		<Section id="usage" title="Usage" desc={`Token usage metered per model call${transportId ? ` · transport: ${transportId}` : ''}.`}>
+			<div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>This session</div>
+			<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+				<StatCard label="Calls" value={String(s?.calls ?? 0)} />
+				<StatCard label="Input tokens" value={fmtTokens(s?.inputTokens ?? 0)} sub={`${fmtTokens(s?.cacheReadTokens ?? 0)} from cache`} />
+				<StatCard label="Output tokens" value={fmtTokens(s?.outputTokens ?? 0)} />
+				<StatCard label="Saved by RIAF" value={fmtTokens(s?.savedTokens ?? 0)} sub={`${saving}% of what would have been sent`} />
+				<StatCard label="Est. cost" value={fmtUsd(s?.costUSD ?? 0)} />
+			</div>
+			<div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)', marginTop: 6 }}>All time</div>
+			<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+				<StatCard label="Calls" value={String(a?.calls ?? 0)} />
+				<StatCard label="Input tokens" value={fmtTokens(a?.inputTokens ?? 0)} sub={`${fmtTokens(a?.cacheReadTokens ?? 0)} from cache`} />
+				<StatCard label="Output tokens" value={fmtTokens(a?.outputTokens ?? 0)} />
+				<StatCard label="Saved by RIAF" value={fmtTokens(a?.savedTokens ?? 0)} />
+				<StatCard label="Est. cost" value={fmtUsd(a?.costUSD ?? 0)} />
+			</div>
+			<div><Button kind="danger" small onClick={() => call({ type: 'resetUsage' })}>Reset all-time counters</Button></div>
+			<Note>"Saved" counts tokens kept out of prompts by stale-result compaction, context trimming and duplicate-read suppression. Costs use the built-in price table and are estimates; with Copilot-provided models token counts are estimated too.</Note>
+		</Section>
+	);
+}
+
+function ClaudeCode({ status, call }: { status?: HostResponse['claudeCode']; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+	return (
+		<Section id="claude" title="Claude Code" desc="Developers using Claude Code get the same index through a local MCP server plus /riaf-plan, /riaf-verify and /riaf-context commands.">
+			<div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+				<Badge ok={status?.mcpJson} text={status?.mcpJson ? '.mcp.json has the riaf server' : '.mcp.json not set up'} />
+				<Badge ok={status?.commands} text={status?.commands ? '.claude/commands installed' : '.claude/commands missing'} />
+				<Badge ok={status?.rules} text={status?.rules ? 'CLAUDE.md carries RIAF rules' : 'CLAUDE.md rules missing'} />
+			</div>
+			<div><Button kind="primary" onClick={() => call({ type: 'setupClaudeCode' })}>{status?.mcpJson ? 'Re-run setup' : 'Set up Claude Code for this repo'}</Button></div>
+			{status?.mcpEntry && <div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>MCP server: <code>{status.mcpEntry}</code></div>}
+		</Section>
+	);
+}
+
+createRoot(document.getElementById('root')!).render(<App />);

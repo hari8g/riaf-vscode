@@ -41,6 +41,8 @@ export class UsageMeter implements UsageMeterPort {
 		this._onChange.fire(this._session);
 	}
 
+	resetAllTime(): void { this._allTime = zero(); void this._state.update('riaf.usage.allTime', this._allTime); this._onChange.fire(this._session); }
+
 	get session(): UsageTotals { return { ...this._session }; }
 	get allTime(): UsageTotals { return { ...this._allTime }; }
 

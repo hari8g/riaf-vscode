@@ -6,6 +6,7 @@ import { IndexManager } from './indexManager.js';
 import { registerLmTools } from './lmTools.js';
 import { createTransport, type ModelTransport } from './modelTransport.js';
 import { installSqliteLoader } from './sqliteLoader.js';
+import { openSettingsPanel } from './settingsPanel.js';
 import { registerProposalProvider } from './tools/editApproval.js';
 import { UsageMeter } from './usage.js';
 
@@ -32,7 +33,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
 	// status bar: tokens saved
 	const saved = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 10);
-	saved.command = 'riaf.showUsage';
+	saved.command = 'riaf.openSettings';
 	const refreshSaved = () => { const t = usage.session; saved.text = `$(zap) ${t.savedTokens.toLocaleString()} saved`; saved.tooltip = 'Tokens RIAF kept out of prompts this session — click for details'; saved.show(); };
 	usage.onDidChange(refreshSaved); refreshSaved();
 	ctx.subscriptions.push(saved);
@@ -56,6 +57,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 			showGraphWebview(ctx, f.name, g);
 		}),
 		vscode.commands.registerCommand('riaf.setupClaudeCode', () => setupClaudeCode(ctx, indexes!)),
+		vscode.commands.registerCommand('riaf.openSettings', () => openSettingsPanel({ ctx, indexes: indexes!, usage, transport: getTransport })),
 		vscode.commands.registerCommand('riaf.showUsage', async () => {
 			const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: `# RIAF token usage\n\n${usage.summaryMarkdown()}\n\nModel transport: ${transport?.id ?? 'none yet'}` });
 			await vscode.window.showTextDocument(doc, { preview: true });

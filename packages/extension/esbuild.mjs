@@ -37,7 +37,22 @@ const mcp = esbuild.context({
   banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
 });
 
-const ctxs = await Promise.all([extension, mcp]);
+// Settings panel UI (browser, IIFE) — React + the bridge, loaded by the WebviewPanel from dist/webview.js.
+const webview = esbuild.context({
+  bundle: true,
+  platform: 'browser',
+  target: 'es2022',
+  format: 'iife',
+  sourcemap: !production,
+  minify: production,
+  logLevel: 'info',
+  jsx: 'automatic',
+  define: { 'process.env.NODE_ENV': production ? '"production"' : '"development"' },
+  entryPoints: { webview: 'webview/main.tsx' },
+  outdir: 'dist',
+});
+
+const ctxs = await Promise.all([extension, mcp, webview]);
 if (watch) {
   await Promise.all(ctxs.map(c => c.watch()));
   console.log('watching…');

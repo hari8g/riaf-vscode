@@ -80,6 +80,7 @@
       }
     ],
     "commands": [
+      { "command": "riaf.openSettings", "title": "RIAF: Open Settings", "category": "RIAF", "icon": "$(gear)" },
       { "command": "riaf.reindex", "title": "RIAF: Reindex Workspace", "category": "RIAF", "icon": "$(refresh)" },
       { "command": "riaf.showReport", "title": "RIAF: Show Indexing Report", "category": "RIAF" },
       { "command": "riaf.showContextGraph", "title": "RIAF: Show Context Graph", "category": "RIAF" },
@@ -120,7 +121,7 @@
     },
     "menus": {
       "commandPalette": [
-        { "command": "riaf.reindex" }, { "command": "riaf.showReport" }, { "command": "riaf.showContextGraph" },
+        { "command": "riaf.openSettings" }, { "command": "riaf.reindex" }, { "command": "riaf.showReport" }, { "command": "riaf.showContextGraph" },
         { "command": "riaf.setupClaudeCode" }, { "command": "riaf.doctor" }, { "command": "riaf.showUsage" }
       ]
     }
@@ -128,19 +129,23 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p webview/tsconfig.json --noEmit",
     "test": "vitest run",
     "vendor": "node scripts/vendor-sqlite.mjs",
-    "package": "npm run typecheck && npm run build && npm run vendor && vsce package --no-dependencies --allow-missing-repository --out ../../riaf-vscode-0.1.0.vsix"
+    "package": "npm run typecheck && node esbuild.mjs --production && npm run vendor && vsce package --no-dependencies --allow-missing-repository --out ../../riaf-vscode-0.1.0.vsix"
   },
   "dependencies": {
     "@bosch-mps/riaf-core": "0.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "@bosch-mps/token-opt": "0.1.0",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@sqlite.org/sqlite-wasm": "^3.54.1-build1",
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
     "@types/vscode": "^1.95.0",
     "@vscode/vsce": "^3.3.0"
   }
