@@ -1,0 +1,32 @@
+{
+  "name": "@bosch-mps/token-opt",
+  "version": "0.1.0",
+  "description": "Token optimisation for LLM agent loops: prompt caching, context trimming, tool-result compaction, read dedup, rate limits, usage & pricing",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "typecheck:test": "tsc -p tsconfig.test.json"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "vscode-uri": "^3.0.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

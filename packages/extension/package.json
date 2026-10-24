@@ -1,0 +1,147 @@
+{
+  "name": "riaf-vscode",
+  "displayName": "RIAF — Repository Intelligence & Agent Loop",
+  "description": "Semantic repository indexing (BM25 + embeddings, context graph) exposed as Copilot tools, an @riaf read-edit-test agent, and an MCP server for Claude Code. Fully offline-capable; corporate-proxy friendly.",
+  "version": "0.1.0",
+  "publisher": "bosch-mps",
+  "private": true,
+  "license": "MIT",
+  "engines": { "vscode": "^1.95.0", "node": ">=20" },
+  "categories": ["AI", "Chat", "Programming Languages", "Other"],
+  "keywords": ["ai", "copilot", "chat-participant", "language-model-tools", "mcp", "repository-intelligence"],
+  "main": "./dist/extension.js",
+  "icon": "media/icon.png",
+  "activationEvents": ["onStartupFinished"],
+  "extensionDependencies": [],
+  "enabledApiProposals": [],
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "riaf.agent",
+        "name": "riaf",
+        "fullName": "RIAF Agent",
+        "description": "Plan → gather (RIAF search) → edit → verify, with token discipline",
+        "isSticky": true,
+        "commands": [
+          { "name": "plan", "description": "Only produce a plan; make no edits" },
+          { "name": "explain", "description": "Explain the relevant code using the index; no edits" },
+          { "name": "verify", "description": "Run the project's test/typecheck commands and report" },
+          { "name": "reindex", "description": "Rebuild the repository index" }
+        ]
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "riaf_search_codebase",
+        "displayName": "Search codebase (RIAF)",
+        "toolReferenceName": "riaf",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Hybrid BM25 + semantic search over the indexed workspace, with identifier-aware tokenisation.",
+        "modelDescription": "Search the indexed repository for code chunks relevant to a natural-language or identifier query. Returns ranked chunks with file path, line range and content. Prefer this over reading many files blindly.",
+        "icon": "$(search)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": { "type": "string", "description": "What to look for — identifiers, concepts, error strings" },
+            "limit": { "type": "number", "description": "Max results (default 8)" },
+            "pathPrefix": { "type": "string", "description": "Restrict to files under this relative path" }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "riaf_context_profile",
+        "displayName": "Context profile (RIAF)",
+        "toolReferenceName": "riafContext",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Related files, importers/imports and covering tests for a file, plus a workspace summary.",
+        "modelDescription": "Get the contextual profile for a file: files it imports, files that import it, tests that cover it, and the workspace profile (languages, frameworks, build/test commands). Call before editing a file.",
+        "icon": "$(references)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": { "type": "string", "description": "Workspace-relative path; omit for the workspace-level profile only" }
+          }
+        }
+      },
+      {
+        "name": "riaf_search_symbols",
+        "displayName": "Search symbols (RIAF)",
+        "toolReferenceName": "riafSymbols",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Find exported symbols (functions, classes, types) by name.",
+        "modelDescription": "Find exported symbols by name or partial name across the workspace. Returns symbol kind, file and line.",
+        "icon": "$(symbol-class)",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "query": { "type": "string" }, "limit": { "type": "number" } },
+          "required": ["query"]
+        }
+      }
+    ],
+    "commands": [
+      { "command": "riaf.reindex", "title": "RIAF: Reindex Workspace", "category": "RIAF", "icon": "$(refresh)" },
+      { "command": "riaf.showReport", "title": "RIAF: Show Indexing Report", "category": "RIAF" },
+      { "command": "riaf.showContextGraph", "title": "RIAF: Show Context Graph", "category": "RIAF" },
+      { "command": "riaf.setupClaudeCode", "title": "RIAF: Set up Claude Code (MCP + plugin)", "category": "RIAF" },
+      { "command": "riaf.doctor", "title": "RIAF: Doctor (index, embeddings, gateway)", "category": "RIAF" },
+      { "command": "riaf.showUsage", "title": "RIAF: Show Token Usage", "category": "RIAF" }
+    ],
+    "configuration": {
+      "title": "RIAF",
+      "properties": {
+        "riaf.index.autoIndexOnStartup": { "type": "boolean", "default": true, "description": "Index the workspace when VS Code opens (incremental after the first run)." },
+        "riaf.index.watch": { "type": "boolean", "default": true, "description": "Keep the index up to date as files change." },
+        "riaf.index.excludeGlobs": {
+          "type": "array", "items": { "type": "string" },
+          "default": ["node_modules/", "dist/", "build/", "out/", "target/", ".git/", "**/*.min.js", "**/*.map", "**/*.lock", "coverage/"],
+          "description": "gitignore-style patterns to skip while indexing."
+        },
+        "riaf.embeddings.enabled": { "type": "boolean", "default": false, "description": "Use embeddings for semantic retrieval (needs the gateway). Off = BM25-only, fully offline." },
+        "riaf.embeddings.model": { "type": "string", "default": "amazon.titan-embed-text-v2:0", "description": "Embedding model name as known to the gateway." },
+        "riaf.gateway.url": { "type": "string", "default": "", "description": "OpenAI-compatible base URL of the internal LLM gateway, e.g. https://llm-gateway.internal/v1. Leave empty to use the models exposed by Copilot (vscode.lm)." },
+        "riaf.gateway.model": { "type": "string", "default": "", "description": "Chat model id at the gateway (e.g. anthropic.claude-sonnet-4-5). Used only when riaf.gateway.url is set." },
+        "riaf.gateway.auth": {
+          "type": "string", "enum": ["none", "microsoft-sso", "github-sso", "header"], "default": "microsoft-sso",
+          "enumDescriptions": ["No Authorization header", "Entra ID token via VS Code's built-in Microsoft sign-in", "GitHub token via VS Code's built-in GitHub sign-in", "Static headers from riaf.gateway.headers (not recommended)"],
+          "description": "How to authenticate to the gateway."
+        },
+        "riaf.gateway.ssoScopes": { "type": "array", "items": { "type": "string" }, "default": ["openid", "profile", "email"], "description": "Scopes requested from the SSO provider; set to your gateway's API scope (e.g. api://<app-id>/.default)." },
+        "riaf.gateway.headers": { "type": "object", "default": {}, "description": "Extra headers to send to the gateway." },
+        "riaf.gateway.promptCache": { "type": "boolean", "default": true, "description": "Apply Anthropic cache_control breakpoints when the gateway routes to Claude models." },
+        "riaf.agent.maxIterations": { "type": "number", "default": 25, "description": "Hard cap on tool-call iterations per @riaf request." },
+        "riaf.agent.maxReadOnlyCalls": { "type": "number", "default": 12, "description": "Cap on exploration (read/search/list) calls before the agent is nudged to act." },
+        "riaf.agent.generatePlan": { "type": "boolean", "default": true, "description": "Produce a short plan (≤300 tokens) before acting and tick items off as tools run." },
+        "riaf.agent.autoVerify": { "type": "boolean", "default": true, "description": "After edits, run the detected test/typecheck command and feed results back." },
+        "riaf.agent.requireEditApproval": { "type": "boolean", "default": true, "description": "Show edits as a diff the developer accepts before writing to disk." },
+        "riaf.agent.allowRunCommand": { "type": "boolean", "default": true, "description": "Allow the agent to run shell commands (asks before each one)." },
+        "riaf.agent.contextWindowRatio": { "type": "number", "default": 0.85, "minimum": 0.3, "maximum": 0.95, "description": "Fraction of the model context window the agent may fill before trimming." }
+      }
+    },
+    "menus": {
+      "commandPalette": [
+        { "command": "riaf.reindex" }, { "command": "riaf.showReport" }, { "command": "riaf.showContextGraph" },
+        { "command": "riaf.setupClaudeCode" }, { "command": "riaf.doctor" }, { "command": "riaf.showUsage" }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "vendor": "node scripts/vendor-sqlite.mjs",
+    "package": "npm run typecheck && npm run build && npm run vendor && vsce package --no-dependencies --allow-missing-repository --out ../../riaf-vscode-0.1.0.vsix"
+  },
+  "dependencies": {
+    "@bosch-mps/riaf-core": "0.1.0",
+    "@bosch-mps/token-opt": "0.1.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@sqlite.org/sqlite-wasm": "^3.54.1-build1",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.3.0"
+  }
+}

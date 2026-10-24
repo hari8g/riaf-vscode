@@ -1,0 +1,12 @@
+{
+  "name": "sample-repo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint src"
+  },
+  "dependencies": { "express": "^4.19.0" },
+  "devDependencies": { "typescript": "^5.6.0", "vitest": "^3.0.0" }
+}

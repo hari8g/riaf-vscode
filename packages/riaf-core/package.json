@@ -1,0 +1,31 @@
+{
+  "name": "@bosch-mps/riaf-core",
+  "version": "0.1.0",
+  "description": "RIAF repository intelligence: scanning, chunking, FTS5/BM25 + embedding hybrid retrieval, universal context graph",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@sqlite.org/sqlite-wasm": "^3.54.1-build1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
