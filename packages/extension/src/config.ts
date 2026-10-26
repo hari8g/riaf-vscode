@@ -9,6 +9,7 @@ export interface RiafSettings {
 		url: string; model: string; auth: GatewayAuth; ssoScopes: string[];
 		headers: Record<string, string>; promptCache: boolean; stream: boolean;
 	};
+	claudeCode: { writeUserSettings: boolean; proxyUrl: string; noProxy: string[]; caCertPath: string };
 	agent: {
 		maxIterations: number; maxReadOnlyCalls: number; generatePlan: boolean; autoVerify: boolean;
 		requireEditApproval: boolean; allowRunCommand: boolean; contextWindowRatio: number;
@@ -45,6 +46,12 @@ export function readSettings(): RiafSettings {
 			headers: c.get<Record<string, string>>('gateway.headers', {}),
 			promptCache: c.get('gateway.promptCache', true),
 			stream: c.get('gateway.stream', true),
+		},
+		claudeCode: {
+			writeUserSettings: c.get('claudeCode.writeUserSettings', true),
+			proxyUrl: c.get('claudeCode.proxyUrl', ''),
+			noProxy: c.get<string[]>('claudeCode.noProxy', ['localhost', '127.0.0.1']),
+			caCertPath: c.get('claudeCode.caCertPath', ''),
 		},
 		agent: {
 			maxIterations: c.get('agent.maxIterations', 25),

@@ -183,6 +183,8 @@ Claude Code has its own agent loop, so RIAF doesn't replace it — it feeds it t
 - `.claude/commands/riaf-plan.md`, `riaf-verify.md`, `riaf-context.md`;
 - a `<!-- riaf:rules -->` block appended to `CLAUDE.md` with the token-discipline rules.
 
+- the **corporate proxy and CA for Claude Code itself** into `~/.claude/settings.json` (`env` block: `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`). Claude Code reads the proxy only from there or the environment — not from npm or VS Code — so without this step `claude` fails with `Unable to connect to Anthropic services … ECONNREFUSED` behind a proxy. RIAF detects the values in this order: `riaf.claudeCode.proxyUrl` → VS Code `http.proxy` → `HTTPS_PROXY` → npm config; CA: `riaf.claudeCode.caCertPath` → `NODE_EXTRA_CA_CERTS` → npm `cafile`. Existing keys in the file are left untouched; turn this off with `riaf.claudeCode.writeUserSettings: false`.
+
 Restart Claude Code in that folder. Then:
 
 | In Claude Code | What happens |
@@ -271,6 +273,15 @@ No default keyboard shortcuts are bound (to avoid clashing with Copilot's). To a
 | `riaf.agent.autoVerify` | `true` | Run detected tests after edits and feed results back |
 | `riaf.agent.diagnosticsAfterEdit` | `true` | Return language-server errors for an edited file in the tool result |
 | `riaf.agent.checkpoints` | `true` | Snapshot files before edits (enables Rewind) |
+
+### Claude Code network (Route A — Claude Code through the corporate proxy)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `riaf.claudeCode.writeUserSettings` | `true` | Let *Set up Claude Code* write proxy/CA into `~/.claude/settings.json` |
+| `riaf.claudeCode.proxyUrl` | `""` | Proxy for Claude Code; empty = auto-detect (VS Code `http.proxy` → `HTTPS_PROXY` → npm config) |
+| `riaf.claudeCode.noProxy` | `localhost, 127.0.0.1` | Hosts reached without the proxy; add your intranet suffix (`.example.com`) |
+| `riaf.claudeCode.caCertPath` | `""` | Corporate root CA `.pem` for TLS-inspecting proxies; empty = auto-detect (`NODE_EXTRA_CA_CERTS` → npm `cafile`). **Required on Node < 22.15**, which cannot read the Windows certificate store |
 
 ### Tools and safety
 
@@ -379,6 +390,7 @@ Start with **RIAF: Doctor** and the **RIAF** output channel. Then:
 
 | Symptom | Cause / fix |
 |---|---|
+| `claude` says *Unable to connect to Anthropic services … ECONNREFUSED* | Claude Code isn't using the corporate proxy. Run **RIAF: Set up Claude Code** (writes `HTTPS_PROXY`/CA into `~/.claude/settings.json`); if nothing was detected, set `riaf.claudeCode.proxyUrl` (value of `npm config get https-proxy`) and, for TLS-inspecting proxies, `riaf.claudeCode.caCertPath`, then re-run. Doctor's *Claude Code network* lines show written vs detected values. Verify with `claude --debug` then `/status` → *Proxy* row |
 | `@riaf` says *No language model available* | Copilot not installed/signed in, or VS Code hasn't granted RIAF access to Copilot's models. Account icon (bottom-left) → *Manage Trusted Extensions* → tick RIAF; or configure a gateway (§9). Doctor's `vscode.lm models:` line shows what RIAF can see |
 | `RIAF not indexed` in the status bar | Run **RIAF: Reindex Workspace**; check the output channel for the failing file |
 | Search finds nothing relevant | Try identifiers rather than prose; check `riaf.index.excludeGlobs` / `.gitignore` aren't hiding the folder (Indexing Report lists what's in); enable embeddings |

@@ -56,7 +56,7 @@ function App() {
 				{show('tools') && <Tools get={get} set={set} />}
 				{show('rules') && <Rules rules={state.rules ?? ''} path={state.rulesPath} call={call} />}
 				{show('usage') && <Usage usage={state.usage} transportId={state.transportId} call={call} />}
-				{show('claude') && <ClaudeCode status={state.claudeCode} call={call} />}
+				{show('claude') && <ClaudeCode status={state.claudeCode} call={call} get={get} set={set} />}
 			</main>
 		</div>
 	);
@@ -219,9 +219,11 @@ function Usage({ usage, transportId, call }: { usage?: { session: UsageTotals; a
 	);
 }
 
-function ClaudeCode({ status, call }: { status?: HostResponse['claudeCode']; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+function ClaudeCode({ status, call, get, set }: P & { status?: HostResponse['claudeCode']; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+	const n = status?.network;
+	const proxyOk = !!n?.writtenProxy && (!n.detectedProxy || n.writtenProxy === n.detectedProxy);
 	return (
-		<Section id="claude" title="Claude Code" desc="Developers using Claude Code get the same index through a local MCP server plus /riaf-plan, /riaf-verify and /riaf-context commands.">
+		<Section id="claude" title="Claude Code" desc="Developers using Claude Code get the same index through a local MCP server plus /riaf-plan, /riaf-verify and /riaf-context commands. Setup also writes the corporate proxy for Claude Code itself.">
 			<div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
 				<Badge ok={status?.mcpJson} text={status?.mcpJson ? '.mcp.json has the riaf server' : '.mcp.json not set up'} />
 				<Badge ok={status?.commands} text={status?.commands ? '.claude/commands installed' : '.claude/commands missing'} />
@@ -229,6 +231,17 @@ function ClaudeCode({ status, call }: { status?: HostResponse['claudeCode']; cal
 			</div>
 			<div><Button kind="primary" onClick={() => call({ type: 'setupClaudeCode' })}>{status?.mcpJson ? 'Re-run setup' : 'Set up Claude Code for this repo'}</Button></div>
 			{status?.mcpEntry && <div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>MCP server: <code>{status.mcpEntry}</code></div>}
+
+			<h3 style={{ fontSize: 14, fontWeight: 600, margin: '14px 0 2px' }}>Corporate network for Claude Code</h3>
+			<div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>Claude Code reads the proxy from <code>{n?.settingsPath ?? '~/.claude/settings.json'}</code>, not from npm or VS Code. Setup writes what it detects; override below if detection is wrong.</div>
+			{n && <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+				<Badge ok={proxyOk} warn={!n.writtenProxy && !!n.detectedProxy} text={n.writtenProxy ? `written: HTTPS_PROXY=${n.writtenProxy}${n.detectedProxy && n.writtenProxy !== n.detectedProxy ? ` (detected now: ${n.detectedProxy})` : ''}` : n.detectedProxy ? `detected ${n.detectedProxy} [${n.detectedProxySource}] — not yet written, run setup` : 'no proxy detected or written'} />
+				<Badge ok={!!n.writtenCa} warn={!n.writtenCa && n.caRequiredHint && !!n.detectedProxy} text={n.writtenCa ? `written: NODE_EXTRA_CA_CERTS=${n.writtenCa}` : n.detectedCa ? `CA detected ${n.detectedCa} [${n.detectedCaSource}] — run setup` : n.caRequiredHint ? 'no CA bundle: needed if the proxy inspects TLS (Node < 22.15)' : 'no CA bundle (OS store will be used)'} />
+			</div>}
+			<Row label="Write network settings" desc="Let setup update ~/.claude/settings.json"><Toggle value={get('claudeCode.writeUserSettings', true)} onChange={v => set('claudeCode.writeUserSettings', v)} /></Row>
+			<Row label="Proxy URL" desc="Empty = auto-detect (VS Code http.proxy → HTTPS_PROXY → npm config)"><TextInput mono value={get('claudeCode.proxyUrl', '')} onChange={v => set('claudeCode.proxyUrl', v)} placeholder="http://proxy.example.com:8080" /></Row>
+			<Row label="No-proxy hosts" desc="Comma-separated; add your intranet suffix"><TextInput mono value={get<string[]>('claudeCode.noProxy', []).join(', ')} onChange={v => set('claudeCode.noProxy', v.split(',').map(x => x.trim()).filter(Boolean))} /></Row>
+			<Row label="Corporate root CA (.pem)" desc="Empty = auto-detect (NODE_EXTRA_CA_CERTS → npm cafile)"><TextInput mono value={get('claudeCode.caCertPath', '')} onChange={v => set('claudeCode.caCertPath', v)} placeholder="C:\certs\corp-root-ca.pem" /></Row>
 		</Section>
 	);
 }

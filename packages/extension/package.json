@@ -6,12 +6,29 @@
   "publisher": "bosch-mps",
   "private": true,
   "license": "MIT",
-  "engines": { "vscode": "^1.95.0", "node": ">=20" },
-  "categories": ["AI", "Chat", "Programming Languages", "Other"],
-  "keywords": ["ai", "copilot", "chat-participant", "language-model-tools", "mcp", "repository-intelligence"],
+  "engines": {
+    "vscode": "^1.95.0",
+    "node": ">=20"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "copilot",
+    "chat-participant",
+    "language-model-tools",
+    "mcp",
+    "repository-intelligence"
+  ],
   "main": "./dist/extension.js",
   "icon": "media/icon.png",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "extensionDependencies": [],
   "enabledApiProposals": [],
   "contributes": {
@@ -23,10 +40,22 @@
         "description": "Plan → gather (RIAF search) → edit → verify, with token discipline",
         "isSticky": true,
         "commands": [
-          { "name": "plan", "description": "Only produce a plan; make no edits" },
-          { "name": "explain", "description": "Explain the relevant code using the index; no edits" },
-          { "name": "verify", "description": "Run the project's test/typecheck commands and report" },
-          { "name": "reindex", "description": "Rebuild the repository index" }
+          {
+            "name": "plan",
+            "description": "Only produce a plan; make no edits"
+          },
+          {
+            "name": "explain",
+            "description": "Explain the relevant code using the index; no edits"
+          },
+          {
+            "name": "verify",
+            "description": "Run the project's test/typecheck commands and report"
+          },
+          {
+            "name": "reindex",
+            "description": "Rebuild the repository index"
+          }
         ]
       }
     ],
@@ -42,11 +71,22 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "query": { "type": "string", "description": "What to look for — identifiers, concepts, error strings" },
-            "limit": { "type": "number", "description": "Max results (default 8)" },
-            "pathPrefix": { "type": "string", "description": "Restrict to files under this relative path" }
+            "query": {
+              "type": "string",
+              "description": "What to look for — identifiers, concepts, error strings"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default 8)"
+            },
+            "pathPrefix": {
+              "type": "string",
+              "description": "Restrict to files under this relative path"
+            }
           },
-          "required": ["query"]
+          "required": [
+            "query"
+          ]
         }
       },
       {
@@ -60,7 +100,10 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "filePath": { "type": "string", "description": "Workspace-relative path; omit for the workspace-level profile only" }
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path; omit for the workspace-level profile only"
+            }
           }
         }
       },
@@ -74,68 +117,319 @@
         "icon": "$(symbol-class)",
         "inputSchema": {
           "type": "object",
-          "properties": { "query": { "type": "string" }, "limit": { "type": "number" } },
-          "required": ["query"]
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "query"
+          ]
         }
       }
     ],
     "commands": [
-      { "command": "riaf.openSettings", "title": "RIAF: Open Settings", "category": "RIAF", "icon": "$(gear)" },
-      { "command": "riaf.reindex", "title": "RIAF: Reindex Workspace", "category": "RIAF", "icon": "$(refresh)" },
-      { "command": "riaf.showReport", "title": "RIAF: Show Indexing Report", "category": "RIAF" },
-      { "command": "riaf.showContextGraph", "title": "RIAF: Show Context Graph", "category": "RIAF" },
-      { "command": "riaf.setupClaudeCode", "title": "RIAF: Set up Claude Code (MCP + plugin)", "category": "RIAF" },
-      { "command": "riaf.doctor", "title": "RIAF: Doctor (index, embeddings, gateway)", "category": "RIAF" },
-      { "command": "riaf.showUsage", "title": "RIAF: Show Token Usage", "category": "RIAF" },
-      { "command": "riaf.rewind", "title": "RIAF: Rewind (restore files / conversation from a checkpoint)", "category": "RIAF", "icon": "$(history)" }
+      {
+        "command": "riaf.openSettings",
+        "title": "RIAF: Open Settings",
+        "category": "RIAF",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "riaf.reindex",
+        "title": "RIAF: Reindex Workspace",
+        "category": "RIAF",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "riaf.showReport",
+        "title": "RIAF: Show Indexing Report",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.showContextGraph",
+        "title": "RIAF: Show Context Graph",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.setupClaudeCode",
+        "title": "RIAF: Set up Claude Code (MCP + plugin)",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.doctor",
+        "title": "RIAF: Doctor (index, embeddings, gateway)",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.showUsage",
+        "title": "RIAF: Show Token Usage",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.rewind",
+        "title": "RIAF: Rewind (restore files / conversation from a checkpoint)",
+        "category": "RIAF",
+        "icon": "$(history)"
+      }
     ],
     "configuration": {
       "title": "RIAF",
       "properties": {
-        "riaf.index.autoIndexOnStartup": { "type": "boolean", "default": true, "description": "Index the workspace when VS Code opens (incremental after the first run)." },
-        "riaf.index.watch": { "type": "boolean", "default": true, "description": "Keep the index up to date as files change." },
-        "riaf.index.respectGitignore": { "type": "boolean", "default": true, "description": "Skip files matched by .gitignore (root and nested) while indexing." },
-        "riaf.index.treeSitter": { "type": "boolean", "default": true, "description": "Chunk code and extract symbols from the syntax tree (tree-sitter). Falls back to regex heuristics per language when a grammar is unavailable." },
+        "riaf.index.autoIndexOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Index the workspace when VS Code opens (incremental after the first run)."
+        },
+        "riaf.index.watch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the index up to date as files change."
+        },
+        "riaf.index.respectGitignore": {
+          "type": "boolean",
+          "default": true,
+          "description": "Skip files matched by .gitignore (root and nested) while indexing."
+        },
+        "riaf.index.treeSitter": {
+          "type": "boolean",
+          "default": true,
+          "description": "Chunk code and extract symbols from the syntax tree (tree-sitter). Falls back to regex heuristics per language when a grammar is unavailable."
+        },
         "riaf.index.excludeGlobs": {
-          "type": "array", "items": { "type": "string" },
-          "default": ["node_modules/", "dist/", "build/", "out/", "target/", ".git/", "**/*.min.js", "**/*.map", "**/*.lock", "coverage/"],
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "node_modules/",
+            "dist/",
+            "build/",
+            "out/",
+            "target/",
+            ".git/",
+            "**/*.min.js",
+            "**/*.map",
+            "**/*.lock",
+            "coverage/"
+          ],
           "description": "gitignore-style patterns to skip while indexing."
         },
-        "riaf.embeddings.enabled": { "type": "boolean", "default": false, "description": "Use embeddings for semantic retrieval (needs the gateway). Off = BM25-only, fully offline." },
-        "riaf.embeddings.model": { "type": "string", "default": "amazon.titan-embed-text-v2:0", "description": "Embedding model name as known to the gateway." },
-        "riaf.gateway.url": { "type": "string", "default": "", "description": "OpenAI-compatible base URL of the internal LLM gateway, e.g. https://llm-gateway.internal/v1. Leave empty to use the models exposed by Copilot (vscode.lm)." },
-        "riaf.gateway.model": { "type": "string", "default": "", "description": "Chat model id at the gateway (e.g. anthropic.claude-sonnet-4-5). Used only when riaf.gateway.url is set." },
+        "riaf.embeddings.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use embeddings for semantic retrieval (needs the gateway). Off = BM25-only, fully offline."
+        },
+        "riaf.embeddings.model": {
+          "type": "string",
+          "default": "amazon.titan-embed-text-v2:0",
+          "description": "Embedding model name as known to the gateway."
+        },
+        "riaf.gateway.url": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI-compatible base URL of the internal LLM gateway, e.g. https://llm-gateway.internal/v1. Leave empty to use the models exposed by Copilot (vscode.lm)."
+        },
+        "riaf.gateway.model": {
+          "type": "string",
+          "default": "",
+          "description": "Chat model id at the gateway (e.g. anthropic.claude-sonnet-4-5). Used only when riaf.gateway.url is set."
+        },
         "riaf.gateway.auth": {
-          "type": "string", "enum": ["none", "microsoft-sso", "github-sso", "header"], "default": "microsoft-sso",
-          "enumDescriptions": ["No Authorization header", "Entra ID token via VS Code's built-in Microsoft sign-in", "GitHub token via VS Code's built-in GitHub sign-in", "Static headers from riaf.gateway.headers (not recommended)"],
+          "type": "string",
+          "enum": [
+            "none",
+            "microsoft-sso",
+            "github-sso",
+            "header"
+          ],
+          "default": "microsoft-sso",
+          "enumDescriptions": [
+            "No Authorization header",
+            "Entra ID token via VS Code's built-in Microsoft sign-in",
+            "GitHub token via VS Code's built-in GitHub sign-in",
+            "Static headers from riaf.gateway.headers (not recommended)"
+          ],
           "description": "How to authenticate to the gateway."
         },
-        "riaf.gateway.ssoScopes": { "type": "array", "items": { "type": "string" }, "default": ["openid", "profile", "email"], "description": "Scopes requested from the SSO provider; set to your gateway's API scope (e.g. api://<app-id>/.default)." },
-        "riaf.gateway.headers": { "type": "object", "default": {}, "description": "Extra headers to send to the gateway." },
-        "riaf.gateway.promptCache": { "type": "boolean", "default": true, "description": "Apply Anthropic cache_control breakpoints when the gateway routes to Claude models." },
-        "riaf.gateway.stream": { "type": "boolean", "default": true, "description": "Stream gateway responses (SSE) so text appears as it is generated. Turn off for gateways that do not support stream=true." },
-        "riaf.agent.maxIterations": { "type": "number", "default": 25, "description": "Hard cap on tool-call iterations per @riaf request." },
-        "riaf.agent.maxReadOnlyCalls": { "type": "number", "default": 12, "description": "Cap on exploration (read/search/list) calls before the agent is nudged to act." },
-        "riaf.agent.generatePlan": { "type": "boolean", "default": true, "description": "Produce a short plan (≤300 tokens) before acting and tick items off as tools run." },
-        "riaf.agent.autoVerify": { "type": "boolean", "default": true, "description": "After edits, run the detected test/typecheck command and feed results back." },
-        "riaf.agent.requireEditApproval": { "type": "boolean", "default": true, "description": "Show edits as a diff the developer accepts before writing to disk." },
-        "riaf.agent.allowRunCommand": { "type": "boolean", "default": true, "description": "Allow the agent to run shell commands (asks before each one)." },
-        "riaf.agent.contextWindowRatio": { "type": "number", "default": 0.85, "minimum": 0.3, "maximum": 0.95, "description": "Fraction of the model context window the agent may fill before trimming." },
-        "riaf.agent.diagnosticsAfterEdit": { "type": "boolean", "default": true, "description": "After each edit, wait briefly for the language server and return its errors/warnings for that file in the tool result." },
-        "riaf.agent.autoApproveDetectedTestCommand": { "type": "boolean", "default": false, "description": "Let the detected test / typecheck / lint command run without a confirmation dialog." },
-        "riaf.agent.preApprovedCommands": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Commands (or command prefixes, e.g. \"npm test\", \"npx vitest\") the agent may run without asking." },
-        "riaf.agent.denyCommandPatterns": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Additional regular expressions; a matching shell command is always refused (built-in list covers rm -rf /, sudo, force push, …)." },
-        "riaf.agent.sandbox": { "type": "string", "enum": ["auto", "policy", "seatbelt", "off"], "default": "auto", "description": "Workspace-write sandbox for shell commands. policy: refuse commands that write outside the workspace. seatbelt: additionally enforce it with macOS sandbox-exec. auto: seatbelt where available, else policy." },
-        "riaf.agent.hooks": { "type": "object", "default": {}, "description": "Hooks (also read from .riaf/hooks.json): { preTool: [{ matcher, command }], postEdit: [{ matcher, command }] }. A preTool hook blocks a call with exit code 2 or stdout {\"decision\":\"block\"}." },
-        "riaf.agent.summarizeHistory": { "type": "boolean", "default": true, "description": "When a thread grows past ~60% of the budget, replace the oldest turns with a model-written summary instead of dropping them (falls back to dropping if the summary call fails)." },
-        "riaf.agent.exploreSubagent": { "type": "boolean", "default": true, "description": "Expose the read-only `explore` subagent tool: a side loop that searches and reads, then returns a short report so the main thread stays small." },
-        "riaf.agent.checkpoints": { "type": "boolean", "default": true, "description": "Snapshot files before the agent edits them so a turn can be rewound (RIAF: Rewind)." }
+        "riaf.gateway.ssoScopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "openid",
+            "profile",
+            "email"
+          ],
+          "description": "Scopes requested from the SSO provider; set to your gateway's API scope (e.g. api://<app-id>/.default)."
+        },
+        "riaf.gateway.headers": {
+          "type": "object",
+          "default": {},
+          "description": "Extra headers to send to the gateway."
+        },
+        "riaf.gateway.promptCache": {
+          "type": "boolean",
+          "default": true,
+          "description": "Apply Anthropic cache_control breakpoints when the gateway routes to Claude models."
+        },
+        "riaf.gateway.stream": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stream gateway responses (SSE) so text appears as it is generated. Turn off for gateways that do not support stream=true."
+        },
+        "riaf.agent.maxIterations": {
+          "type": "number",
+          "default": 25,
+          "description": "Hard cap on tool-call iterations per @riaf request."
+        },
+        "riaf.agent.maxReadOnlyCalls": {
+          "type": "number",
+          "default": 12,
+          "description": "Cap on exploration (read/search/list) calls before the agent is nudged to act."
+        },
+        "riaf.agent.generatePlan": {
+          "type": "boolean",
+          "default": true,
+          "description": "Produce a short plan (≤300 tokens) before acting and tick items off as tools run."
+        },
+        "riaf.agent.autoVerify": {
+          "type": "boolean",
+          "default": true,
+          "description": "After edits, run the detected test/typecheck command and feed results back."
+        },
+        "riaf.agent.requireEditApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show edits as a diff the developer accepts before writing to disk."
+        },
+        "riaf.agent.allowRunCommand": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow the agent to run shell commands (asks before each one)."
+        },
+        "riaf.agent.contextWindowRatio": {
+          "type": "number",
+          "default": 0.85,
+          "minimum": 0.3,
+          "maximum": 0.95,
+          "description": "Fraction of the model context window the agent may fill before trimming."
+        },
+        "riaf.agent.diagnosticsAfterEdit": {
+          "type": "boolean",
+          "default": true,
+          "description": "After each edit, wait briefly for the language server and return its errors/warnings for that file in the tool result."
+        },
+        "riaf.agent.autoApproveDetectedTestCommand": {
+          "type": "boolean",
+          "default": false,
+          "description": "Let the detected test / typecheck / lint command run without a confirmation dialog."
+        },
+        "riaf.agent.preApprovedCommands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Commands (or command prefixes, e.g. \"npm test\", \"npx vitest\") the agent may run without asking."
+        },
+        "riaf.agent.denyCommandPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional regular expressions; a matching shell command is always refused (built-in list covers rm -rf /, sudo, force push, …)."
+        },
+        "riaf.agent.sandbox": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "policy",
+            "seatbelt",
+            "off"
+          ],
+          "default": "auto",
+          "description": "Workspace-write sandbox for shell commands. policy: refuse commands that write outside the workspace. seatbelt: additionally enforce it with macOS sandbox-exec. auto: seatbelt where available, else policy."
+        },
+        "riaf.agent.hooks": {
+          "type": "object",
+          "default": {},
+          "description": "Hooks (also read from .riaf/hooks.json): { preTool: [{ matcher, command }], postEdit: [{ matcher, command }] }. A preTool hook blocks a call with exit code 2 or stdout {\"decision\":\"block\"}."
+        },
+        "riaf.agent.summarizeHistory": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a thread grows past ~60% of the budget, replace the oldest turns with a model-written summary instead of dropping them (falls back to dropping if the summary call fails)."
+        },
+        "riaf.agent.exploreSubagent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Expose the read-only `explore` subagent tool: a side loop that searches and reads, then returns a short report so the main thread stays small."
+        },
+        "riaf.agent.checkpoints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Snapshot files before the agent edits them so a turn can be rewound (RIAF: Rewind)."
+        },
+        "riaf.claudeCode.writeUserSettings": {
+          "type": "boolean",
+          "default": true,
+          "description": "When running \"RIAF: Set up Claude Code\", also write the corporate proxy / CA configuration into ~/.claude/settings.json (env block) so Claude Code can reach Anthropic through the proxy."
+        },
+        "riaf.claudeCode.proxyUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Proxy URL for Claude Code (e.g. http://proxy.example.com:8080). Empty = auto-detect from VS Code http.proxy, HTTPS_PROXY, then npm config."
+        },
+        "riaf.claudeCode.noProxy": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "localhost",
+            "127.0.0.1"
+          ],
+          "description": "Hosts Claude Code should reach without the proxy (written as NO_PROXY). Add your intranet suffix, e.g. .example.com."
+        },
+        "riaf.claudeCode.caCertPath": {
+          "type": "string",
+          "default": "",
+          "description": "PEM file with the corporate root CA for TLS-inspecting proxies (written as NODE_EXTRA_CA_CERTS). Empty = auto-detect from NODE_EXTRA_CA_CERTS, then npm config cafile. Required on Node < 22.15."
+        }
       }
     },
     "menus": {
       "commandPalette": [
-        { "command": "riaf.openSettings" }, { "command": "riaf.reindex" }, { "command": "riaf.showReport" }, { "command": "riaf.showContextGraph" },
-        { "command": "riaf.setupClaudeCode" }, { "command": "riaf.doctor" }, { "command": "riaf.showUsage" }, { "command": "riaf.rewind" }
+        {
+          "command": "riaf.openSettings"
+        },
+        {
+          "command": "riaf.reindex"
+        },
+        {
+          "command": "riaf.showReport"
+        },
+        {
+          "command": "riaf.showContextGraph"
+        },
+        {
+          "command": "riaf.setupClaudeCode"
+        },
+        {
+          "command": "riaf.doctor"
+        },
+        {
+          "command": "riaf.showUsage"
+        },
+        {
+          "command": "riaf.rewind"
+        }
       ]
     }
   },

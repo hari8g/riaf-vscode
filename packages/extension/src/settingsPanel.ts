@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setupClaudeCode } from './claudeCodeSetup.js';
+import { claudeUserSettingsPath, detectCaCert, detectProxy, nodeNeedsExplicitCa, readClaudeUserSettingsEnv } from './claudeCodeNetwork.js';
 import { readSettings } from './config.js';
 import type { IndexManager } from './indexManager.js';
 import { createTransport, type ModelTransport } from './modelTransport.js';
@@ -24,6 +25,7 @@ export const SETTING_KEYS = [
 	'agent.maxIterations', 'agent.maxReadOnlyCalls', 'agent.generatePlan', 'agent.autoVerify', 'agent.requireEditApproval', 'agent.allowRunCommand', 'agent.contextWindowRatio',
 	'agent.diagnosticsAfterEdit', 'agent.autoApproveDetectedTestCommand', 'agent.preApprovedCommands', 'agent.denyCommandPatterns',
 	'agent.sandbox', 'agent.hooks', 'agent.summarizeHistory', 'agent.exploreSubagent', 'agent.checkpoints',
+	'claudeCode.writeUserSettings', 'claudeCode.proxyUrl', 'claudeCode.noProxy', 'claudeCode.caCertPath',
 ] as const;
 
 export interface PanelDeps {
@@ -55,12 +57,29 @@ async function statusBlock(d: PanelDeps): Promise<HostResponse> {
 			mcpJson, commands: existsSync(join(root, '.claude', 'commands', 'riaf-plan.md')),
 			rules: existsSync(join(root, 'CLAUDE.md')) && readFileSync(join(root, 'CLAUDE.md'), 'utf8').includes('<!-- riaf:rules -->'),
 			mcpEntry: join(d.ctx.extensionPath, 'dist', 'mcp.mjs'),
+			network: claudeCodeNetworkStatus(),
 		};
 	}
 	if (!readSettings().gateway.url) {
 		try { out.models = (await vscode.lm.selectChatModels()).map(m => `${m.vendor}/${m.id}`); } catch { out.models = []; }
 	}
 	return out;
+}
+
+/** What Claude Code will use for the network, from ~/.claude/settings.json, plus what we would detect now. */
+export function claudeCodeNetworkStatus() {
+	const s = readSettings();
+	const written = readClaudeUserSettingsEnv();
+	const proxy = detectProxy({ settingProxy: s.claudeCode.proxyUrl, vscodeProxy: vscode.workspace.getConfiguration('http').get<string>('proxy') });
+	const ca = detectCaCert({ settingCaPath: s.claudeCode.caCertPath });
+	return {
+		settingsPath: claudeUserSettingsPath(),
+		writtenProxy: written.HTTPS_PROXY ?? written.https_proxy ?? written.HTTP_PROXY ?? '',
+		writtenCa: written.NODE_EXTRA_CA_CERTS ?? '',
+		detectedProxy: proxy?.value ?? '', detectedProxySource: proxy?.source ?? '',
+		detectedCa: ca?.value ?? '', detectedCaSource: ca?.source ?? '',
+		caRequiredHint: nodeNeedsExplicitCa(),
+	};
 }
 
 /** Pure-ish request handler (exported for tests). */

@@ -6,7 +6,7 @@ import { IndexManager } from './indexManager.js';
 import { registerLmTools } from './lmTools.js';
 import { createTransport, type ModelTransport } from './modelTransport.js';
 import { installSqliteLoader } from './sqliteLoader.js';
-import { openSettingsPanel } from './settingsPanel.js';
+import { claudeCodeNetworkStatus, openSettingsPanel } from './settingsPanel.js';
 import { registerProposalProvider } from './tools/editApproval.js';
 import { resolveShell } from './tools/shell.js';
 import { UsageMeter } from './usage.js';
@@ -84,6 +84,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 			}
 			lines.push(`- proxy: http.proxy=${vscode.workspace.getConfiguration('http').get('proxy') || '(system)'} · http.proxySupport=${vscode.workspace.getConfiguration('http').get('proxySupport')}`);
 			{ const sh = resolveShell(); lines.push(`- shell for commands/hooks: ${sh.source}${sh.kind === 'cmd' ? '  ⚠ install Git for Windows (Git Bash) or set RIAF_SHELL' : ''}`); }
+			{
+				const n = claudeCodeNetworkStatus();
+				lines.push(`- Claude Code network (${n.settingsPath}): proxy=${n.writtenProxy || '(not written)'} · CA=${n.writtenCa || '(none)'}`);
+				lines.push(`  detected now: proxy=${n.detectedProxy ? `${n.detectedProxy} [${n.detectedProxySource}]` : 'none'} · CA=${n.detectedCa ? `${n.detectedCa} [${n.detectedCaSource}]` : 'none'}${n.caRequiredHint && !n.detectedCa ? '  ⚠ Node < 22.15: a TLS-inspecting proxy needs riaf.claudeCode.caCertPath' : ''}`);
+				if (n.detectedProxy && n.writtenProxy !== n.detectedProxy) { lines.push('  → run "RIAF: Set up Claude Code" to write the detected proxy for Claude Code'); }
+			}
 			const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: lines.join('\n') });
 			await vscode.window.showTextDocument(doc, { preview: true });
 		}),

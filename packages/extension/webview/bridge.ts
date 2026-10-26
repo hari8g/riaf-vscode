@@ -2,7 +2,8 @@
 export type SettingsSnapshot = Record<string, unknown>;
 export type IndexStatus = { indexed: boolean; files: number; chunks: number; symbols: number; lastIndexedAt?: number; dbPath?: string; folder?: string; embeddings: boolean };
 export type UsageTotals = { calls: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUSD: number; savedTokens: number };
-export type ClaudeCodeStatus = { mcpJson: boolean; commands: boolean; rules: boolean; mcpEntry?: string };
+export type ClaudeCodeNetwork = { settingsPath: string; writtenProxy: string; writtenCa: string; detectedProxy: string; detectedProxySource: string; detectedCa: string; detectedCaSource: string; caRequiredHint: boolean };
+export type ClaudeCodeStatus = { mcpJson: boolean; commands: boolean; rules: boolean; mcpEntry?: string; network?: ClaudeCodeNetwork };
 export type ConnectionTest = { ok: boolean; message: string; transportId?: string; latencyMs?: number };
 
 export type HostRequest =
