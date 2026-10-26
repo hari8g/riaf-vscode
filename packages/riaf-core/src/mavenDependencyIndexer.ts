@@ -97,7 +97,7 @@ export async function indexMavenDependencies(workspaceRoot: string): Promise<Mav
 		const parsed = parsePomDependencies(content);
 		if (!parsed) continue;
 
-		const relPath = relative(workspaceRoot, pomPath);
+		const relPath = relative(workspaceRoot, pomPath).replace(/\\/g, '/');
 
 		for (const dep of parsed.deps) {
 			if (!dep.groupId || !dep.artifactId) continue;

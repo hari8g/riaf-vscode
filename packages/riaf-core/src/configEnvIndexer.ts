@@ -123,7 +123,7 @@ export function indexConfigEnvironments(workspaceRoot: string, options?: ConfigI
 		try { content = readFileSync(filePath, 'utf8'); } catch { continue; }
 
 		const parsed = flatParseYaml(content);
-		const relPath = relative(workspaceRoot, filePath);
+		const relPath = relative(workspaceRoot, filePath).replace(/\\/g, '/');
 
 		for (const [key, value] of Object.entries(parsed)) {
 			allProperties.push({ filePath: relPath, serviceName, env, key, value });

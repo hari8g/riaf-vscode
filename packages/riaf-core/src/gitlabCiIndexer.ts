@@ -70,7 +70,7 @@ export function indexGitlabPipelines(workspaceRoot: string): PipelineIndexResult
 	for (const filePath of ciFiles) {
 		let content: string;
 		try { content = readFileSync(filePath, 'utf8'); } catch { continue; }
-		const relPath = relative(workspaceRoot, filePath);
+		const relPath = relative(workspaceRoot, filePath).replace(/\\/g, '/');
 
 		const stagesMatch = content.match(/^stages:\s*\n((?:\s+-\s+\w[\w-]*\n)+)/m);
 		if (stagesMatch) {

@@ -39,7 +39,7 @@ export function indexNpmDependencies(workspaceRoot: string, scopeFilter?: string
 	for (const pkgPath of packageJsonFiles) {
 		let pkg: any;
 		try { pkg = JSON.parse(readFileSync(pkgPath, 'utf8')); } catch { continue; }
-		const relPath = relative(workspaceRoot, pkgPath);
+		const relPath = relative(workspaceRoot, pkgPath).replace(/\\/g, '/');
 
 		for (const depType of ['dependencies', 'devDependencies', 'peerDependencies'] as const) {
 			const deps = pkg[depType] ?? {};

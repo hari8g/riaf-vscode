@@ -51,7 +51,7 @@ export function indexTerraformResources(workspaceRoot: string): TerraformIndexRe
 	for (const filePath of tfFiles) {
 		let content: string;
 		try { content = readFileSync(filePath, 'utf8'); } catch { continue; }
-		const relPath = relative(workspaceRoot, filePath);
+		const relPath = relative(workspaceRoot, filePath).replace(/\\/g, '/');
 
 		const resourceRegex = /^resource\s+"([^"]+)"\s+"([^"]+)"\s*\{/gm;
 		let match: RegExpExecArray | null;

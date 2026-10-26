@@ -82,7 +82,7 @@ export function indexJavaSpringService(workspaceRoot: string, serviceDir: string
 		let source: string;
 		try { source = readFileSync(filePath, 'utf8'); } catch { continue; }
 
-		const relPath = relative(workspaceRoot, filePath);
+		const relPath = relative(workspaceRoot, filePath).replace(/\\/g, '/');
 
 		const feignMatches = source.matchAll(/@FeignClient\s*\(\s*(?:name\s*=\s*|value\s*=\s*)?["']([^"']+)["']/g);
 		for (const m of feignMatches) {

@@ -65,7 +65,7 @@ export function indexKubernetesManifests(workspaceRoot: string, configDir?: stri
 		let content: string;
 		try { content = readFileSync(filePath, 'utf8'); } catch { continue; }
 
-		const relPath = relative(workspaceRoot, filePath);
+		const relPath = relative(workspaceRoot, filePath).replace(/\\/g, '/');
 		const envLabel = inferEnvLabel(filePath);
 
 		const documents = content.split(/^---\s*$/m).filter(d => d.trim().length > 0);
