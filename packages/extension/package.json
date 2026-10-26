@@ -165,6 +165,21 @@
         "category": "RIAF"
       },
       {
+        "command": "riaf.proxyBridgeStart",
+        "title": "RIAF: Start proxy bridge",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.proxyBridgeStop",
+        "title": "RIAF: Stop proxy bridge",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.proxyBridgeLog",
+        "title": "RIAF: Show proxy bridge log",
+        "category": "RIAF"
+      },
+      {
         "command": "riaf.doctor",
         "title": "RIAF: Doctor (index, embeddings, gateway)",
         "category": "RIAF"
@@ -406,6 +421,16 @@
           "type": "string",
           "default": "",
           "description": "PEM file with the corporate root CA for TLS-inspecting proxies (written as NODE_EXTRA_CA_CERTS). Empty = auto-detect from NODE_EXTRA_CA_CERTS, then npm config cafile. Required on Node < 22.15."
+        },
+        "riaf.claudeCode.proxyBridge": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run a local proxy bridge (127.0.0.1:<port>) that forwards to the corporate proxy and adds your credentials itself. Claude Code and the gateway transport are pointed at the bridge, so no password is written to any file. Recommended for authenticated proxies."
+        },
+        "riaf.claudeCode.proxyBridgePort": {
+          "type": "number",
+          "default": 3128,
+          "description": "Port of the local proxy bridge."
         }
       }
     },
@@ -437,6 +462,15 @@
         },
         {
           "command": "riaf.setClaudeProxyCredentials"
+        },
+        {
+          "command": "riaf.proxyBridgeStart"
+        },
+        {
+          "command": "riaf.proxyBridgeStop"
+        },
+        {
+          "command": "riaf.proxyBridgeLog"
         }
       ]
     }

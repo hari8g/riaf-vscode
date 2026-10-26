@@ -56,7 +56,7 @@ function App() {
 				{show('tools') && <Tools get={get} set={set} />}
 				{show('rules') && <Rules rules={state.rules ?? ''} path={state.rulesPath} call={call} />}
 				{show('usage') && <Usage usage={state.usage} transportId={state.transportId} call={call} />}
-				{show('claude') && <ClaudeCode status={state.claudeCode} call={call} get={get} set={set} />}
+				{show('claude') && <ClaudeCode status={state.claudeCode} bridge={state.bridge} call={call} get={get} set={set} />}
 			</main>
 		</div>
 	);
@@ -219,7 +219,7 @@ function Usage({ usage, transportId, call }: { usage?: { session: UsageTotals; a
 	);
 }
 
-function ClaudeCode({ status, call, get, set }: P & { status?: HostResponse['claudeCode']; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+function ClaudeCode({ status, bridge, call, get, set }: P & { status?: HostResponse['claudeCode']; bridge?: HostResponse['bridge']; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
 	const n = status?.network;
 	const proxyOk = !!n?.writtenProxy && (!n.detectedProxy || n.writtenProxy === n.detectedProxy);
 	return (
@@ -241,7 +241,20 @@ function ClaudeCode({ status, call, get, set }: P & { status?: HostResponse['cla
 			{n && <Badge ok={n.credentialSource !== 'none'} warn={n.credentialSource === 'none' && !!n.detectedProxy} text={n.credentialSource === 'url' ? `credentials in the detected proxy URL (${n.credentialUser})` : n.credentialSource === 'secrets' ? `credentials stored in the OS credential store (${n.credentialUser})` : 'no proxy credentials — needed if the proxy asks for a user name and password'} />}
 			<Row label="Write network settings" desc="Let setup update ~/.claude/settings.json"><Toggle value={get('claudeCode.writeUserSettings', true)} onChange={v => set('claudeCode.writeUserSettings', v)} /></Row>
 			<Row label="Proxy URL" desc="Host and port only — never put a password here. Empty = auto-detect (VS Code http.proxy → HTTPS_PROXY → npm config)"><TextInput mono value={get('claudeCode.proxyUrl', '')} onChange={v => set('claudeCode.proxyUrl', v)} placeholder="http://proxy.example.com:8080" /></Row>
-			<Row label="Proxy credentials" desc="Kept in the OS credential store; written only into ~/.claude/settings.json, which Claude Code requires"><Button onClick={() => call({ type: 'setProxyCredentials' })}>{n?.credentialSource === 'secrets' ? 'Change credentials…' : 'Set credentials…'}</Button></Row>
+			<Row label="Proxy credentials" desc="Kept in the OS credential store. With the bridge on, they never leave VS Code; without it they go into ~/.claude/settings.json"><Button onClick={() => call({ type: 'setProxyCredentials' })}>{n?.credentialSource === 'secrets' ? 'Change credentials…' : 'Set credentials…'}</Button></Row>
+			<Row label="Local proxy bridge" desc="127.0.0.1 proxy that adds your credentials and forwards to the corporate proxy. Recommended for authenticated proxies; logs each CONNECT and the upstream's answer">
+				<div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+					<Toggle value={get('claudeCode.proxyBridge', true)} onChange={v => set('claudeCode.proxyBridge', v)} label={get('claudeCode.proxyBridge', true) ? 'enabled' : 'disabled'} />
+					{bridge && <Badge ok={bridge.running} warn={bridge.enabled && !bridge.running} text={bridge.running ? `running at ${bridge.url} → ${bridge.upstream}` : bridge.enabled ? `not running — ${bridge.error ?? 'unknown'}` : 'disabled'} />}
+					{bridge?.stats && <div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>CONNECTs {bridge.stats.connects} · ok {bridge.stats.upstreamOk} · refused {bridge.stats.upstreamRejected}{bridge.stats.lastUpstreamStatus ? ` · last upstream: ${bridge.stats.lastUpstreamStatus}` : ''}{bridge.stats.lastError ? ` · last error: ${bridge.stats.lastError}` : ''}</div>}
+					<div style={{ display: 'flex', gap: 8 }}>
+						<Button small onClick={() => call({ type: 'bridgeStart' })}>{bridge?.running ? 'Restart' : 'Start'}</Button>
+						<Button small onClick={() => call({ type: 'bridgeStop' })} disabled={!bridge?.running}>Stop</Button>
+						<Button small onClick={() => call({ type: 'bridgeLog' })}>Log</Button>
+					</div>
+				</div>
+			</Row>
+			<Row label="Bridge port"><NumberInput min={1024} max={65535} value={get('claudeCode.proxyBridgePort', 3128)} onChange={v => set('claudeCode.proxyBridgePort', v)} /></Row>
 			<Row label="No-proxy hosts" desc="Comma-separated; add your intranet suffix"><TextInput mono value={get<string[]>('claudeCode.noProxy', []).join(', ')} onChange={v => set('claudeCode.noProxy', v.split(',').map(x => x.trim()).filter(Boolean))} /></Row>
 			<Row label="Corporate root CA (.pem)" desc="Empty = auto-detect (NODE_EXTRA_CA_CERTS → npm cafile)"><TextInput mono value={get('claudeCode.caCertPath', '')} onChange={v => set('claudeCode.caCertPath', v)} placeholder="C:\certs\corp-root-ca.pem" /></Row>
 		</Section>

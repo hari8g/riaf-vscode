@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { registerChatParticipant } from './chatParticipant.js';
 import { setProxyCredentials, setupClaudeCode } from './claudeCodeSetup.js';
+import { ProxyBridgeManager } from './proxyBridgeManager.js';
 import { readSettings, usesGateway } from './config.js';
 import { IndexManager } from './indexManager.js';
 import { registerLmTools } from './lmTools.js';
@@ -28,6 +29,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
 	indexes = new IndexManager(ctx, getTransport);
 	ctx.subscriptions.push(indexes);
+
+	// local proxy bridge for authenticated corporate proxies (used by Claude Code via ~/.claude/settings.json)
+	const bridge = new ProxyBridgeManager(ctx);
+	ctx.subscriptions.push(bridge);
+	void bridge.ensureStarted();
 
 	registerLmTools(ctx, indexes);
 	registerChatParticipant(ctx, indexes, usage);
@@ -57,9 +63,16 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 			const g = await idx.getGraph();
 			showGraphWebview(ctx, f.name, g);
 		}),
-		vscode.commands.registerCommand('riaf.setupClaudeCode', () => setupClaudeCode(ctx, indexes!)),
+		vscode.commands.registerCommand('riaf.setupClaudeCode', () => setupClaudeCode(ctx, indexes!, bridge)),
 		vscode.commands.registerCommand('riaf.setClaudeProxyCredentials', () => setProxyCredentials(ctx)),
-		vscode.commands.registerCommand('riaf.openSettings', () => openSettingsPanel({ ctx, indexes: indexes!, usage, transport: getTransport })),
+		vscode.commands.registerCommand('riaf.proxyBridgeStart', async () => {
+			const b = await bridge.restart();
+			if (b) { vscode.window.showInformationMessage(`RIAF proxy bridge listening on ${b.url} → ${bridge.upstreamDescription()}`); }
+			else { vscode.window.showWarningMessage(`RIAF proxy bridge not started: ${bridge.lastError}`); }
+		}),
+		vscode.commands.registerCommand('riaf.proxyBridgeStop', () => bridge.stop()),
+		vscode.commands.registerCommand('riaf.proxyBridgeLog', () => bridge.output.show(true)),
+		vscode.commands.registerCommand('riaf.openSettings', () => openSettingsPanel({ ctx, indexes: indexes!, usage, transport: getTransport, bridge })),
 		vscode.commands.registerCommand('riaf.showUsage', async () => {
 			const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: `# RIAF token usage\n\n${usage.summaryMarkdown()}\n\nModel transport: ${transport?.id ?? 'none yet'}` });
 			await vscode.window.showTextDocument(doc, { preview: true });
@@ -88,6 +101,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 			{
 				const n = await claudeCodeNetworkStatus(ctx);
 				lines.push(`- Claude Code network (${n.settingsPath}): proxy=${n.writtenProxy || '(not written)'}${n.writtenProxy ? (n.writtenHasCredentials ? ' (with credentials)' : ' (no credentials)') : ''} · CA=${n.writtenCa || '(none)'}`);
+				{
+					const b = bridge.status();
+					lines.push(`- proxy bridge: ${b.running ? `running at ${b.url} → ${b.upstream}` : b.enabled ? `not running (${b.error ?? 'no reason'})` : 'disabled'}${b.stats ? ` · CONNECTs ${b.stats.connects}, ok ${b.stats.upstreamOk}, refused ${b.stats.upstreamRejected}${b.stats.lastUpstreamStatus ? `, last upstream: ${b.stats.lastUpstreamStatus}` : ''}${b.stats.lastError ? `, last error: ${b.stats.lastError}` : ''}` : ''}`);
+				}
 				lines.push(`  proxy credentials: ${n.credentialSource === 'url' ? `in the detected URL (${n.credentialUser})` : n.credentialSource === 'secrets' ? `stored in the OS credential store (${n.credentialUser})` : 'none — run "RIAF: Set Claude Code proxy credentials" if the proxy requires sign-in'}`);
 				lines.push(`  detected now: proxy=${n.detectedProxy ? `${n.detectedProxy} [${n.detectedProxySource}]` : 'none'} · CA=${n.detectedCa ? `${n.detectedCa} [${n.detectedCaSource}]` : 'none'}${n.caRequiredHint && !n.detectedCa ? '  ⚠ Node < 22.15: a TLS-inspecting proxy needs riaf.claudeCode.caCertPath' : ''}`);
 				if (n.detectedProxy && n.writtenProxy !== n.detectedProxy) { lines.push('  → run "RIAF: Set up Claude Code" to write the detected proxy for Claude Code'); }

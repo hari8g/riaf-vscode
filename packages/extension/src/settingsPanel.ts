@@ -25,11 +25,14 @@ export const SETTING_KEYS = [
 	'agent.maxIterations', 'agent.maxReadOnlyCalls', 'agent.generatePlan', 'agent.autoVerify', 'agent.requireEditApproval', 'agent.allowRunCommand', 'agent.contextWindowRatio',
 	'agent.diagnosticsAfterEdit', 'agent.autoApproveDetectedTestCommand', 'agent.preApprovedCommands', 'agent.denyCommandPatterns',
 	'agent.sandbox', 'agent.hooks', 'agent.summarizeHistory', 'agent.exploreSubagent', 'agent.checkpoints',
-	'claudeCode.writeUserSettings', 'claudeCode.proxyUrl', 'claudeCode.noProxy', 'claudeCode.caCertPath',
+	'claudeCode.writeUserSettings', 'claudeCode.proxyUrl', 'claudeCode.noProxy', 'claudeCode.caCertPath', 'claudeCode.proxyBridge', 'claudeCode.proxyBridgePort',
 ] as const;
+
+import type { ProxyBridgeManager } from './proxyBridgeManager.js';
 
 export interface PanelDeps {
 	ctx: vscode.ExtensionContext;
+	bridge?: ProxyBridgeManager;
 	indexes: IndexManager;
 	usage: UsageMeter;
 	transport: () => ModelTransport | undefined;
@@ -58,6 +61,7 @@ async function statusBlock(d: PanelDeps): Promise<HostResponse> {
 			rules: existsSync(join(root, 'CLAUDE.md')) && readFileSync(join(root, 'CLAUDE.md'), 'utf8').includes('<!-- riaf:rules -->'),
 			mcpEntry: join(d.ctx.extensionPath, 'dist', 'mcp.mjs'),
 			network: await claudeCodeNetworkStatus(d.ctx),
+			bridge: d.bridge?.status(),
 		};
 	}
 	if (!readSettings().gateway.url) {
@@ -119,7 +123,10 @@ export async function handle(req: HostRequest, d: PanelDeps): Promise<HostRespon
 			await writeRules(folder, req.text ?? '');
 			return { rules: req.text ?? '' };
 		}
-		case 'setupClaudeCode': await setupClaudeCode(d.ctx, d.indexes); return statusBlock(d);
+		case 'setupClaudeCode': await setupClaudeCode(d.ctx, d.indexes, d.bridge); return statusBlock(d);
+		case 'bridgeStart': await d.bridge?.restart(); return statusBlock(d);
+		case 'bridgeStop': await d.bridge?.stop(); return statusBlock(d);
+		case 'bridgeLog': d.bridge?.output.show(true); return {};
 		case 'setProxyCredentials': await setProxyCredentials(d.ctx); return statusBlock(d);
 		case 'openNativeSettings': await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:bosch-mps.riaf-vscode'); return {};
 		case 'openOutput': d.indexes.output.show(true); return {};

@@ -284,6 +284,21 @@ No default keyboard shortcuts are bound (to avoid clashing with Copilot's). To a
 | `riaf.claudeCode.noProxy` | `localhost, 127.0.0.1` | Hosts reached without the proxy; add your intranet suffix (`.example.com`) |
 | `riaf.claudeCode.caCertPath` | `""` | Corporate root CA `.pem` for TLS-inspecting proxies; empty = auto-detect (`NODE_EXTRA_CA_CERTS` → npm `cafile`). **Required on Node < 22.15**, which cannot read the Windows certificate store |
 
+#### Authenticated proxies: the local proxy bridge (recommended)
+
+Some proxy clients — Claude Code's native build included — fail to complete a `CONNECT` through a basic-auth corporate proxy even with correct credentials (symptom: `ERR_SOCKET_CLOSED` while `curl -x … -U user:pass` works). RIAF's **proxy bridge** sidesteps that: an unauthenticated proxy on `127.0.0.1:3128` that forwards to the corporate proxy and adds your credentials itself.
+
+- Credentials stay in the OS credential store; nothing is written to `~/.claude/settings.json` except `HTTPS_PROXY=http://127.0.0.1:3128`.
+- The bridge runs while VS Code is open (started automatically). Its log (**RIAF: Show proxy bridge log**) shows each `CONNECT` and the proxy's exact answer, so a 407 or a block is visible instead of a closed socket.
+- Outside VS Code: `node <extension>/dist/proxy-bridge.mjs --upstream http://proxy.example.com:8080` (prompts for credentials, or `RIAF_PROXY_USER` / `RIAF_PROXY_PASS`), then `HTTPS_PROXY=http://127.0.0.1:3128` for the client.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `riaf.claudeCode.proxyBridge` | `true` | Use the bridge when an upstream proxy is known; setup writes the bridge URL for Claude Code |
+| `riaf.claudeCode.proxyBridgePort` | `3128` | Listening port |
+
+Commands: **RIAF: Start proxy bridge**, **RIAF: Stop proxy bridge**, **RIAF: Show proxy bridge log**.
+
 ### Tools and safety
 
 | Setting | Default | Meaning |
@@ -391,6 +406,7 @@ Start with **RIAF: Doctor** and the **RIAF** output channel. Then:
 
 | Symptom | Cause / fix |
 |---|---|
+| `claude` says *ERR_SOCKET_CLOSED* although `curl -x … -U user:pass https://api.anthropic.com/` works | Claude Code's proxy client and the corporate proxy don't agree on the authenticated `CONNECT`. Enable the **proxy bridge** (default on), set credentials, re-run **RIAF: Set up Claude Code** so `HTTPS_PROXY` becomes `http://127.0.0.1:3128`; then check **RIAF: Show proxy bridge log** for the upstream's answer |
 | Proxy returns **407** / `claude` reports proxy authentication failed | The proxy needs credentials: run **RIAF: Set Claude Code proxy credentials**, then **RIAF: Set up Claude Code** again. Doctor shows `proxy credentials: stored in the OS credential store (user)` when they're in place; the password is never displayed |
 | `claude` says *Unable to connect to Anthropic services … ECONNREFUSED* | Claude Code isn't using the corporate proxy. Run **RIAF: Set up Claude Code** (writes `HTTPS_PROXY`/CA into `~/.claude/settings.json`); if nothing was detected, set `riaf.claudeCode.proxyUrl` (value of `npm config get https-proxy`) and, for TLS-inspecting proxies, `riaf.claudeCode.caCertPath`, then re-run. Doctor's *Claude Code network* lines show written vs detected values. Verify with `claude --debug` then `/status` → *Proxy* row |
 | `@riaf` says *No language model available* | Copilot not installed/signed in, or VS Code hasn't granted RIAF access to Copilot's models. Account icon (bottom-left) → *Manage Trusted Extensions* → tick RIAF; or configure a gateway (§9). Doctor's `vscode.lm models:` line shows what RIAF can see |

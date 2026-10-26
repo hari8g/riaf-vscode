@@ -30,7 +30,7 @@ const extension = esbuild.context({
 
 const mcp = esbuild.context({
   ...common,
-  entryPoints: { mcp: 'src/mcp.ts' },
+  entryPoints: { mcp: 'src/mcp.ts', 'proxy-bridge': 'src/proxyBridgeCli.ts' },
   format: 'esm',
   outdir: 'dist',
   outExtension: { '.js': '.mjs' },

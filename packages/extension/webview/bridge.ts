@@ -4,6 +4,7 @@ export type IndexStatus = { indexed: boolean; files: number; chunks: number; sym
 export type UsageTotals = { calls: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUSD: number; savedTokens: number };
 export type ClaudeCodeNetwork = { settingsPath: string; writtenProxy: string; writtenHasCredentials: boolean; writtenCa: string; detectedProxy: string; detectedProxySource: string; detectedCa: string; detectedCaSource: string; caRequiredHint: boolean; credentialSource: 'url' | 'secrets' | 'none'; credentialUser: string };
 export type ClaudeCodeStatus = { mcpJson: boolean; commands: boolean; rules: boolean; mcpEntry?: string; network?: ClaudeCodeNetwork };
+export type BridgeStatus = { enabled: boolean; running: boolean; url?: string; upstream: string; stats?: { connects: number; upstreamOk: number; upstreamRejected: number; lastUpstreamStatus?: string; lastError?: string }; error?: string };
 export type ConnectionTest = { ok: boolean; message: string; transportId?: string; latencyMs?: number };
 
 export type HostRequest =
@@ -12,13 +13,13 @@ export type HostRequest =
 	| { type: 'testConnection' }
 	| { type: 'reindex'; force?: boolean }
 	| { type: 'getRules' } | { type: 'setRules'; text: string }
-	| { type: 'setupClaudeCode' } | { type: 'setProxyCredentials' }
+	| { type: 'setupClaudeCode' } | { type: 'setProxyCredentials' } | { type: 'bridgeStart' } | { type: 'bridgeStop' } | { type: 'bridgeLog' }
 	| { type: 'openNativeSettings' } | { type: 'openOutput' } | { type: 'openReport' } | { type: 'openGraph' }
 	| { type: 'resetUsage' };
 
 export type HostResponse = {
 	settings?: SettingsSnapshot; index?: IndexStatus; usage?: { session: UsageTotals; allTime: UsageTotals }; claudeCode?: ClaudeCodeStatus;
-	rules?: string; rulesPath?: string; connection?: ConnectionTest; transportId?: string; models?: string[]; error?: string;
+	rules?: string; rulesPath?: string; bridge?: BridgeStatus; connection?: ConnectionTest; transportId?: string; models?: string[]; error?: string;
 };
 
 type Envelope = { id: number; req?: HostRequest; res?: HostResponse; push?: HostResponse };

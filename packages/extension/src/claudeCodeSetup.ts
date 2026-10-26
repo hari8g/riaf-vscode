@@ -44,7 +44,9 @@ export async function setProxyCredentials(ctx: vscode.ExtensionContext): Promise
  *      Claude Code itself can reach Anthropic through the proxy ("Route A"); see claudeCodeNetwork.ts
  * Everything is local files; nothing is fetched, so it works behind the corporate proxy.
  */
-export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: IndexManager): Promise<void> {
+import type { ProxyBridgeManager } from './proxyBridgeManager.js';
+
+export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: IndexManager, bridgeMgr?: ProxyBridgeManager): Promise<void> {
 	const folder = indexes.folderFor(vscode.window.activeTextEditor?.document.uri);
 	if (!folder) { vscode.window.showErrorMessage('RIAF: open a workspace folder first.'); return; }
 	const root = folder.uri.fsPath;
@@ -89,13 +91,21 @@ export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: Ind
 		const ca = detectCaCert({ settingCaPath: s.claudeCode.caCertPath });
 		if (proxy) {
 			try {
-				const { url: proxyUrl, credentialSource } = await resolveProxyWithCredentials(ctx, proxy.value);
-				const env = buildClaudeEnv({ proxy: proxyUrl, noProxy: s.claudeCode.noProxy, caCertPath: ca?.value });
+				let { url: proxyUrl, credentialSource } = await resolveProxyWithCredentials(ctx, proxy.value);
+				let viaBridge = false;
+				if (s.claudeCode.proxyBridge && bridgeMgr) {
+					const b = await bridgeMgr.ensureStarted();
+					if (b) { proxyUrl = b.url; viaBridge = true; }
+					else { networkNote += ` Proxy bridge not running (${bridgeMgr.lastError ?? 'unknown'}); falling back to the direct proxy URL.`; }
+				}
+				const env = buildClaudeEnv({ proxy: proxyUrl, noProxy: viaBridge ? ['localhost', '127.0.0.1'] : s.claudeCode.noProxy, caCertPath: ca?.value });
 				const r = writeClaudeUserSettings(env);
 				userSettingsPath = r.path;
-				networkNote = r.changedKeys.length
-					? ` Proxy ${redactProxyUrl(proxyUrl)} (from ${proxy.source}${credentialSource === 'secrets' ? ' + stored credentials' : ''})${ca ? ` and CA ${ca.value}` : ''} written to ${r.path}.`
-					: ` Proxy configuration in ${r.path} already up to date.`;
+				networkNote += r.changedKeys.length
+					? (viaBridge
+						? ` Claude Code will use the local proxy bridge ${proxyUrl} → ${redactProxyUrl(proxy.value)} (written to ${r.path}). The bridge runs while VS Code is open; for a terminal without VS Code run: node "${join(ctx.extensionPath, 'dist', 'proxy-bridge.mjs')}" --upstream ${splitProxyCredentials(proxy.value).url}`
+						: ` Proxy ${redactProxyUrl(proxyUrl)} (from ${proxy.source}${credentialSource === 'secrets' ? ' + stored credentials' : ''})${ca ? ` and CA ${ca.value}` : ''} written to ${r.path}.`)
+					: ` Proxy configuration in ${r.path} already up to date${viaBridge ? ` (bridge ${proxyUrl})` : ''}.`;
 				if (credentialSource === 'none') { networkNote += ' No proxy credentials: if the proxy needs a user name and password, run "RIAF: Set Claude Code proxy credentials" and re-run setup.'; }
 				if (!ca && nodeNeedsExplicitCa()) {
 					networkNote += ' No CA bundle found: if the proxy inspects TLS, set riaf.claudeCode.caCertPath to the corporate root CA (.pem) and re-run — Node < 22.15 cannot read the Windows certificate store.';
