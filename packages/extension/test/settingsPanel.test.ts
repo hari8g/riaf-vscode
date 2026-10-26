@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync } from 'node:fs'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
-import { configStore } from './vscode-mock.js';
+import { configStore, mockSecrets } from './vscode-mock.js';
 import { SETTING_KEYS, handle, snapshotSettings } from '../src/settingsPanel.js';
 import { readRules, writeRules, rulesForPrompt } from '../src/rules.js';
 import { UsageMeter } from '../src/usage.js';
 
 const memento = () => { const m = new Map<string, unknown>(); return { get: (k: string, d: unknown) => m.get(k) ?? d, update: async (k: string, v: unknown) => { m.set(k, v); } } as any; };
-const deps = (folder?: unknown) => ({ ctx: { extensionPath: '/ext' } as any, usage: new UsageMeter(memento()), transport: () => undefined, indexes: { folderFor: () => folder, output: { show() { } } } as any });
+const deps = (folder?: unknown) => ({ ctx: { extensionPath: '/ext', secrets: mockSecrets } as any, usage: new UsageMeter(memento()), transport: () => undefined, indexes: { folderFor: () => folder, output: { show() { } } } as any });
 
 describe('settings panel host', () => {
 	it('set: accepts known keys and rejects unknown ones', async () => {
@@ -42,5 +42,17 @@ describe('settings panel host', () => {
 		const r = await handle({ type: 'resetUsage' }, d);
 		expect((r.usage as any).allTime.calls).toBe(0);
 		expect((r.usage as any).session.calls).toBe(1);
+	});
+});
+
+import { resolveProxyWithCredentials } from '../src/claudeCodeSetup.js';
+describe('proxy credentials from SecretStorage', () => {
+	it('fills credentials from secrets only when the detected URL has none', async () => {
+		const ctx = { extensionPath: '/ext', secrets: mockSecrets } as any;
+		expect(await resolveProxyWithCredentials(ctx, 'http://proxy:8080')).toEqual({ url: 'http://proxy:8080', credentialSource: 'none' });
+		await mockSecrets.store('riaf.claudeCode.proxyUsername', 'hpg5ban'); await mockSecrets.store('riaf.claudeCode.proxyPassword', 'p@ss');
+		expect(await resolveProxyWithCredentials(ctx, 'http://proxy:8080')).toEqual({ url: 'http://hpg5ban:p%40ss@proxy:8080', credentialSource: 'secrets' });
+		// credentials already in the URL win over stored ones
+		expect(await resolveProxyWithCredentials(ctx, 'http://other:x@proxy:8080')).toEqual({ url: 'http://other:x@proxy:8080', credentialSource: 'url' });
 	});
 });

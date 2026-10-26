@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { setupClaudeCode } from './claudeCodeSetup.js';
-import { claudeUserSettingsPath, detectCaCert, detectProxy, nodeNeedsExplicitCa, readClaudeUserSettingsEnv } from './claudeCodeNetwork.js';
+import { PROXY_SECRET_USER, setProxyCredentials, setupClaudeCode } from './claudeCodeSetup.js';
+import { claudeUserSettingsPath, detectCaCert, detectProxy, nodeNeedsExplicitCa, readClaudeUserSettingsEnv, redactProxyUrl, splitProxyCredentials } from './claudeCodeNetwork.js';
 import { readSettings } from './config.js';
 import type { IndexManager } from './indexManager.js';
 import { createTransport, type ModelTransport } from './modelTransport.js';
@@ -57,7 +57,7 @@ async function statusBlock(d: PanelDeps): Promise<HostResponse> {
 			mcpJson, commands: existsSync(join(root, '.claude', 'commands', 'riaf-plan.md')),
 			rules: existsSync(join(root, 'CLAUDE.md')) && readFileSync(join(root, 'CLAUDE.md'), 'utf8').includes('<!-- riaf:rules -->'),
 			mcpEntry: join(d.ctx.extensionPath, 'dist', 'mcp.mjs'),
-			network: claudeCodeNetworkStatus(),
+			network: await claudeCodeNetworkStatus(d.ctx),
 		};
 	}
 	if (!readSettings().gateway.url) {
@@ -67,16 +67,23 @@ async function statusBlock(d: PanelDeps): Promise<HostResponse> {
 }
 
 /** What Claude Code will use for the network, from ~/.claude/settings.json, plus what we would detect now. */
-export function claudeCodeNetworkStatus() {
+export async function claudeCodeNetworkStatus(ctx: vscode.ExtensionContext) {
 	const s = readSettings();
 	const written = readClaudeUserSettingsEnv();
 	const proxy = detectProxy({ settingProxy: s.claudeCode.proxyUrl, vscodeProxy: vscode.workspace.getConfiguration('http').get<string>('proxy') });
 	const ca = detectCaCert({ settingCaPath: s.claudeCode.caCertPath });
+	const writtenRaw = written.HTTPS_PROXY ?? written.https_proxy ?? written.HTTP_PROXY ?? '';
+	const storedUser = await ctx.secrets.get(PROXY_SECRET_USER);
+	const detectedHasCreds = !!(proxy && splitProxyCredentials(proxy.value).username);
 	return {
 		settingsPath: claudeUserSettingsPath(),
-		writtenProxy: written.HTTPS_PROXY ?? written.https_proxy ?? written.HTTP_PROXY ?? '',
+		// redacted everywhere: these strings go to the webview, Doctor and logs
+		writtenProxy: redactProxyUrl(writtenRaw),
+		writtenHasCredentials: !!splitProxyCredentials(writtenRaw).username,
 		writtenCa: written.NODE_EXTRA_CA_CERTS ?? '',
-		detectedProxy: proxy?.value ?? '', detectedProxySource: proxy?.source ?? '',
+		detectedProxy: proxy ? redactProxyUrl(proxy.value) : '', detectedProxySource: proxy?.source ?? '',
+		credentialSource: detectedHasCreds ? 'url' as const : storedUser ? 'secrets' as const : 'none' as const,
+		credentialUser: detectedHasCreds ? (splitProxyCredentials(proxy!.value).username ?? '') : (storedUser ?? ''),
 		detectedCa: ca?.value ?? '', detectedCaSource: ca?.source ?? '',
 		caRequiredHint: nodeNeedsExplicitCa(),
 	};
@@ -113,6 +120,7 @@ export async function handle(req: HostRequest, d: PanelDeps): Promise<HostRespon
 			return { rules: req.text ?? '' };
 		}
 		case 'setupClaudeCode': await setupClaudeCode(d.ctx, d.indexes); return statusBlock(d);
+		case 'setProxyCredentials': await setProxyCredentials(d.ctx); return statusBlock(d);
 		case 'openNativeSettings': await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:bosch-mps.riaf-vscode'); return {};
 		case 'openOutput': d.indexes.output.show(true); return {};
 		case 'openReport': await vscode.commands.executeCommand('riaf.showReport'); return {};

@@ -61,3 +61,39 @@ describe('Claude Code network config (Route A)', () => {
 		expect(nodeNeedsExplicitCa('24.1.0')).toBe(false);
 	});
 });
+
+import { redactProxyUrl, splitProxyCredentials, withProxyCredentials } from '../src/claudeCodeNetwork.js';
+
+describe('proxy credentials', () => {
+	const bosch = 'http://rb-proxy-unix-apac.bosch.com:8080';
+
+	it('composes user:password@host and percent-encodes awkward characters', () => {
+		expect(withProxyCredentials(bosch, 'hpg5ban', 'plain')).toBe('http://hpg5ban:plain@rb-proxy-unix-apac.bosch.com:8080');
+		const tricky = withProxyCredentials(bosch, 'DE\\hpg5ban', 'p@ss:w/rd#1 %');
+		expect(tricky).toBe('http://DE%5Chpg5ban:p%40ss%3Aw%2Frd%231%20%25@rb-proxy-unix-apac.bosch.com:8080');
+		expect(new URL(tricky).password).toBe('p%40ss%3Aw%2Frd%231%20%25');       // URL still parses
+		expect(withProxyCredentials(bosch)).toBe(bosch);                           // no user → unchanged
+		expect(withProxyCredentials('rb-proxy-unix-apac.bosch.com:8080', 'u', 'p')).toBe('http://u:p@rb-proxy-unix-apac.bosch.com:8080');
+	});
+
+	it('round-trips through split (decoding) and keeps the bare URL', () => {
+		const full = withProxyCredentials(bosch, 'hpg5ban', 'p@ss#1');
+		const parts = splitProxyCredentials(full);
+		expect(parts).toEqual({ url: bosch, username: 'hpg5ban', password: 'p@ss#1' });
+		expect(splitProxyCredentials(bosch)).toEqual({ url: bosch });
+		expect(splitProxyCredentials('')).toEqual({ url: '' });
+	});
+
+	it('redacts the password everywhere it could be displayed', () => {
+		expect(redactProxyUrl('http://hpg5ban:secret@rb-proxy-unix-apac.bosch.com:8080')).toBe('http://hpg5ban:***@rb-proxy-unix-apac.bosch.com:8080');
+		expect(redactProxyUrl(bosch)).toBe(bosch);
+		expect(redactProxyUrl('')).toBe('');
+		expect(redactProxyUrl('http://u:p%40ss@h:1')).not.toContain('p%40ss');
+	});
+
+	it('detectProxy keeps credentials that came from the environment, so they reach Claude Code', () => {
+		const d = detectProxy({ env: { HTTPS_PROXY: 'http://hpg5ban:secret@rb-proxy-unix-apac.bosch.com:8080' }, npmConfig: () => undefined });
+		expect(d?.value).toBe('http://hpg5ban:secret@rb-proxy-unix-apac.bosch.com:8080');
+		expect(splitProxyCredentials(d!.value).username).toBe('hpg5ban');
+	});
+});

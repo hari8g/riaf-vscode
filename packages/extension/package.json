@@ -160,6 +160,11 @@
         "category": "RIAF"
       },
       {
+        "command": "riaf.setClaudeProxyCredentials",
+        "title": "RIAF: Set Claude Code proxy credentials",
+        "category": "RIAF"
+      },
+      {
         "command": "riaf.doctor",
         "title": "RIAF: Doctor (index, embeddings, gateway)",
         "category": "RIAF"
@@ -384,7 +389,7 @@
         "riaf.claudeCode.proxyUrl": {
           "type": "string",
           "default": "",
-          "description": "Proxy URL for Claude Code (e.g. http://proxy.example.com:8080). Empty = auto-detect from VS Code http.proxy, HTTPS_PROXY, then npm config."
+          "description": "Proxy URL for Claude Code, host and port only, e.g. http://proxy.example.com:8080. Do NOT put a password here — use \"RIAF: Set Claude Code proxy credentials\" (stored in the OS credential store). Empty = auto-detect from VS Code http.proxy, HTTPS_PROXY, then npm config."
         },
         "riaf.claudeCode.noProxy": {
           "type": "array",
@@ -429,6 +434,9 @@
         },
         {
           "command": "riaf.rewind"
+        },
+        {
+          "command": "riaf.setClaudeProxyCredentials"
         }
       ]
     }

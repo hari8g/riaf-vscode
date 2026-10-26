@@ -3,7 +3,38 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import type { IndexManager } from './indexManager.js';
 import { readSettings } from './config.js';
-import { buildClaudeEnv, detectCaCert, detectProxy, nodeNeedsExplicitCa, writeClaudeUserSettings } from './claudeCodeNetwork.js';
+import { buildClaudeEnv, detectCaCert, detectProxy, nodeNeedsExplicitCa, redactProxyUrl, splitProxyCredentials, withProxyCredentials, writeClaudeUserSettings } from './claudeCodeNetwork.js';
+
+export const PROXY_SECRET_USER = 'riaf.claudeCode.proxyUsername';
+export const PROXY_SECRET_PASS = 'riaf.claudeCode.proxyPassword';
+
+/** Proxy URL for Claude Code with credentials: from the URL itself if it has them, else from SecretStorage. */
+export async function resolveProxyWithCredentials(ctx: vscode.ExtensionContext, detectedUrl: string): Promise<{ url: string; credentialSource: 'url' | 'secrets' | 'none' }> {
+	const parts = splitProxyCredentials(detectedUrl);
+	if (parts.username) { return { url: withProxyCredentials(parts.url, parts.username, parts.password), credentialSource: 'url' }; }
+	const user = await ctx.secrets.get(PROXY_SECRET_USER);
+	const pass = await ctx.secrets.get(PROXY_SECRET_PASS);
+	if (user) { return { url: withProxyCredentials(parts.url, user, pass ?? ''), credentialSource: 'secrets' }; }
+	return { url: parts.url, credentialSource: 'none' };
+}
+
+/** "RIAF: Set Claude Code proxy credentials" — masked prompt, stored in the OS keychain via SecretStorage. */
+export async function setProxyCredentials(ctx: vscode.ExtensionContext): Promise<boolean> {
+	const current = await ctx.secrets.get(PROXY_SECRET_USER);
+	const username = await vscode.window.showInputBox({ title: 'Proxy username (1/2)', prompt: 'User name for the corporate proxy (Bosch NT user, without domain unless the proxy needs it)', value: current ?? '', ignoreFocusOut: true });
+	if (username === undefined) { return false; }
+	if (!username.trim()) {
+		await ctx.secrets.delete(PROXY_SECRET_USER); await ctx.secrets.delete(PROXY_SECRET_PASS);
+		vscode.window.showInformationMessage('RIAF: proxy credentials cleared.');
+		return true;
+	}
+	const password = await vscode.window.showInputBox({ title: 'Proxy password (2/2)', prompt: 'Stored in the OS credential store, never in settings.json. Special characters are encoded automatically.', password: true, ignoreFocusOut: true });
+	if (password === undefined) { return false; }
+	await ctx.secrets.store(PROXY_SECRET_USER, username.trim());
+	await ctx.secrets.store(PROXY_SECRET_PASS, password);
+	vscode.window.showInformationMessage('RIAF: proxy credentials saved. Run "RIAF: Set up Claude Code" to write them for Claude Code.');
+	return true;
+}
 
 /**
  * "RIAF: Set up Claude Code" — makes the same index available to Claude Code users:
@@ -58,12 +89,14 @@ export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: Ind
 		const ca = detectCaCert({ settingCaPath: s.claudeCode.caCertPath });
 		if (proxy) {
 			try {
-				const env = buildClaudeEnv({ proxy: proxy.value, noProxy: s.claudeCode.noProxy, caCertPath: ca?.value });
+				const { url: proxyUrl, credentialSource } = await resolveProxyWithCredentials(ctx, proxy.value);
+				const env = buildClaudeEnv({ proxy: proxyUrl, noProxy: s.claudeCode.noProxy, caCertPath: ca?.value });
 				const r = writeClaudeUserSettings(env);
 				userSettingsPath = r.path;
 				networkNote = r.changedKeys.length
-					? ` Proxy ${proxy.value} (from ${proxy.source})${ca ? ` and CA ${ca.value}` : ''} written to ${r.path}.`
+					? ` Proxy ${redactProxyUrl(proxyUrl)} (from ${proxy.source}${credentialSource === 'secrets' ? ' + stored credentials' : ''})${ca ? ` and CA ${ca.value}` : ''} written to ${r.path}.`
 					: ` Proxy configuration in ${r.path} already up to date.`;
+				if (credentialSource === 'none') { networkNote += ' No proxy credentials: if the proxy needs a user name and password, run "RIAF: Set Claude Code proxy credentials" and re-run setup.'; }
 				if (!ca && nodeNeedsExplicitCa()) {
 					networkNote += ' No CA bundle found: if the proxy inspects TLS, set riaf.claudeCode.caCertPath to the corporate root CA (.pem) and re-run — Node < 22.15 cannot read the Windows certificate store.';
 				}

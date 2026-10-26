@@ -51,6 +51,45 @@ export const normaliseProxyUrl = (u: string): string => {
 	return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`;
 };
 
+/* ── credentials ─────────────────────────────────────────────────────────────────────────── */
+
+export type ProxyParts = { url: string; username?: string; password?: string };
+
+/** Split `http://user:pass@host:port` into the bare URL and (decoded) credentials. */
+export function splitProxyCredentials(u: string): ProxyParts {
+	const url = normaliseProxyUrl(u);
+	if (!url) { return { url: '' }; }
+	try {
+		const p = new URL(url);
+		const username = p.username ? decodeURIComponent(p.username) : undefined;
+		const password = p.password ? decodeURIComponent(p.password) : undefined;
+		p.username = ''; p.password = '';
+		return { url: p.toString().replace(/\/$/, ''), username, password };
+	} catch { return { url }; }
+}
+
+/** Compose `http://user:pass@host:port`, percent-encoding so `@`, `#`, `:` or `/` in a password cannot break the URL. */
+export function withProxyCredentials(bareUrl: string, username?: string, password?: string): string {
+	const url = normaliseProxyUrl(bareUrl);
+	if (!url || !username) { return url; }
+	try {
+		const p = new URL(url);
+		p.username = encodeURIComponent(username);
+		p.password = password ? encodeURIComponent(password) : '';
+		return p.toString().replace(/\/$/, '');
+	} catch { return url; }
+}
+
+/** For logs, notifications and the panel: never show the password. */
+export function redactProxyUrl(u: string): string {
+	if (!u) { return ''; }
+	try {
+		const p = new URL(normaliseProxyUrl(u));
+		if (!p.username && !p.password) { return u; }
+		return `${p.protocol}//${p.username ? `${decodeURIComponent(p.username)}:***@` : ''}${p.host}`;
+	} catch { return u.replace(/\/\/[^@/]*@/, '//***@'); }
+}
+
 export function detectProxy(i: ProxyInputs): Detected {
 	const env = i.env ?? process.env;
 	const npm = i.npmConfig ?? npmConfigGet;

@@ -279,7 +279,8 @@ No default keyboard shortcuts are bound (to avoid clashing with Copilot's). To a
 | Setting | Default | Meaning |
 |---|---|---|
 | `riaf.claudeCode.writeUserSettings` | `true` | Let *Set up Claude Code* write proxy/CA into `~/.claude/settings.json` |
-| `riaf.claudeCode.proxyUrl` | `""` | Proxy for Claude Code; empty = auto-detect (VS Code `http.proxy` → `HTTPS_PROXY` → npm config) |
+| `riaf.claudeCode.proxyUrl` | `""` | Proxy for Claude Code, **host and port only**; empty = auto-detect (VS Code `http.proxy` → `HTTPS_PROXY` → npm config) |
+| *(command)* **RIAF: Set Claude Code proxy credentials** | — | For proxies that need a user name and password. Masked prompt; stored in the OS credential store (Windows Credential Manager / macOS Keychain), never in `settings.json`. Setup composes `http://user:pass@host:port` (special characters percent-encoded) and writes it only into `~/.claude/settings.json`, which is where Claude Code requires it. Credentials already present in a detected `HTTPS_PROXY` are kept as-is |
 | `riaf.claudeCode.noProxy` | `localhost, 127.0.0.1` | Hosts reached without the proxy; add your intranet suffix (`.example.com`) |
 | `riaf.claudeCode.caCertPath` | `""` | Corporate root CA `.pem` for TLS-inspecting proxies; empty = auto-detect (`NODE_EXTRA_CA_CERTS` → npm `cafile`). **Required on Node < 22.15**, which cannot read the Windows certificate store |
 
@@ -390,6 +391,7 @@ Start with **RIAF: Doctor** and the **RIAF** output channel. Then:
 
 | Symptom | Cause / fix |
 |---|---|
+| Proxy returns **407** / `claude` reports proxy authentication failed | The proxy needs credentials: run **RIAF: Set Claude Code proxy credentials**, then **RIAF: Set up Claude Code** again. Doctor shows `proxy credentials: stored in the OS credential store (user)` when they're in place; the password is never displayed |
 | `claude` says *Unable to connect to Anthropic services … ECONNREFUSED* | Claude Code isn't using the corporate proxy. Run **RIAF: Set up Claude Code** (writes `HTTPS_PROXY`/CA into `~/.claude/settings.json`); if nothing was detected, set `riaf.claudeCode.proxyUrl` (value of `npm config get https-proxy`) and, for TLS-inspecting proxies, `riaf.claudeCode.caCertPath`, then re-run. Doctor's *Claude Code network* lines show written vs detected values. Verify with `claude --debug` then `/status` → *Proxy* row |
 | `@riaf` says *No language model available* | Copilot not installed/signed in, or VS Code hasn't granted RIAF access to Copilot's models. Account icon (bottom-left) → *Manage Trusted Extensions* → tick RIAF; or configure a gateway (§9). Doctor's `vscode.lm models:` line shows what RIAF can see |
 | `RIAF not indexed` in the status bar | Run **RIAF: Reindex Workspace**; check the output channel for the failing file |
