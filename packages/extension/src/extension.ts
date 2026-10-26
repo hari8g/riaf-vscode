@@ -100,6 +100,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 			{ const sh = resolveShell(); lines.push(`- shell for commands/hooks: ${sh.source}${sh.kind === 'cmd' ? '  ⚠ install Git for Windows (Git Bash) or set RIAF_SHELL' : ''}`); }
 			{
 				const n = await claudeCodeNetworkStatus(ctx);
+				if (n.proxyError) { lines.push(`- ⚠ ${n.proxyError}`); }
 				lines.push(`- Claude Code network (${n.settingsPath}): proxy=${n.writtenProxy || '(not written)'}${n.writtenProxy ? (n.writtenHasCredentials ? ' (with credentials)' : ' (no credentials)') : ''} · CA=${n.writtenCa || '(none)'}`);
 				{
 					const b = bridge.status();

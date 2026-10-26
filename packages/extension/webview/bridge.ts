@@ -2,7 +2,7 @@
 export type SettingsSnapshot = Record<string, unknown>;
 export type IndexStatus = { indexed: boolean; files: number; chunks: number; symbols: number; lastIndexedAt?: number; dbPath?: string; folder?: string; embeddings: boolean };
 export type UsageTotals = { calls: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUSD: number; savedTokens: number };
-export type ClaudeCodeNetwork = { settingsPath: string; writtenProxy: string; writtenHasCredentials: boolean; writtenCa: string; detectedProxy: string; detectedProxySource: string; detectedCa: string; detectedCaSource: string; caRequiredHint: boolean; upToDate: boolean; credentialSource: 'url' | 'secrets' | 'none'; credentialUser: string };
+export type ClaudeCodeNetwork = { settingsPath: string; proxyError?: string; writtenProxy: string; writtenHasCredentials: boolean; writtenCa: string; detectedProxy: string; detectedProxySource: string; detectedCa: string; detectedCaSource: string; caRequiredHint: boolean; upToDate: boolean; credentialSource: 'url' | 'secrets' | 'none'; credentialUser: string };
 export type ClaudeCodeStatus = { mcpJson: boolean; commands: boolean; rules: boolean; mcpEntry?: string; network?: ClaudeCodeNetwork };
 export type BridgeStatus = { enabled: boolean; running: boolean; url?: string; upstream: string; stats?: { connects: number; upstreamOk: number; upstreamRejected: number; lastUpstreamStatus?: string; lastError?: string }; error?: string };
 export type ConnectionTest = { ok: boolean; message: string; transportId?: string; latencyMs?: number };

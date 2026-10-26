@@ -97,3 +97,20 @@ describe('proxy credentials', () => {
 		expect(splitProxyCredentials(d!.value).username).toBe('hpg5ban');
 	});
 });
+
+import { validateProxyUrl } from '../src/claudeCodeNetwork.js';
+describe('proxy URL validation (pasted-settings-line protection)', () => {
+	it('accepts real URLs and tolerates pasted quotes', () => {
+		expect(validateProxyUrl('')).toBeUndefined();
+		expect(validateProxyUrl('http://rb-proxy-unix-apac.bosch.com:8080')).toBeUndefined();
+		expect(validateProxyUrl('rb-proxy-unix-apac.bosch.com:8080')).toBeUndefined();
+		expect(validateProxyUrl('"http://rb-proxy-unix-apac.bosch.com:8080",')).toBeUndefined();
+		expect(normaliseProxyUrl('"http://p:1",')).toBe('http://p:1');
+	});
+	it('rejects a whole settings line and other junk, and detectProxy surfaces it', () => {
+		expect(validateProxyUrl('"riaf.claudeCode.proxyUrl": "http://rb-proxy-unix-apac.bosch.com:8080"')).toMatch(/just the URL/);
+		expect(validateProxyUrl('ftp://p:1')).toMatch(/http/);
+		expect(validateProxyUrl('http://p:1/some/path')).toMatch(/path/);
+		expect(() => detectProxy({ settingProxy: '"riaf.claudeCode.proxyUrl": "http://x:1"', env: {}, npmConfig: () => undefined })).toThrow(/riaf\.claudeCode\.proxyUrl/);
+	});
+});

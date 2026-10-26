@@ -87,7 +87,12 @@ export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: Ind
 	let networkNote = '';
 	let userSettingsPath: string | undefined;
 	if (s.claudeCode.writeUserSettings) {
-		const proxy = detectProxy({ settingProxy: s.claudeCode.proxyUrl, vscodeProxy: vscode.workspace.getConfiguration('http').get<string>('proxy') });
+		let proxy: ReturnType<typeof detectProxy>;
+		try { proxy = detectProxy({ settingProxy: s.claudeCode.proxyUrl, vscodeProxy: vscode.workspace.getConfiguration('http').get<string>('proxy') }); }
+		catch (e) {
+			vscode.window.showErrorMessage(`RIAF: ${(e as Error).message}`, 'Open settings').then(a => a && vscode.commands.executeCommand('workbench.action.openSettings', 'riaf.claudeCode.proxyUrl'));
+			return;
+		}
 		const ca = detectCaCert({ settingCaPath: s.claudeCode.caCertPath });
 		if (proxy) {
 			try {

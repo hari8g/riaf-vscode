@@ -74,13 +74,16 @@ async function statusBlock(d: PanelDeps): Promise<HostResponse> {
 export async function claudeCodeNetworkStatus(ctx: vscode.ExtensionContext) {
 	const s = readSettings();
 	const written = readClaudeUserSettingsEnv();
-	const proxy = detectProxy({ settingProxy: s.claudeCode.proxyUrl, vscodeProxy: vscode.workspace.getConfiguration('http').get<string>('proxy') });
+	let proxy: ReturnType<typeof detectProxy>; let proxyError: string | undefined;
+	try { proxy = detectProxy({ settingProxy: s.claudeCode.proxyUrl, vscodeProxy: vscode.workspace.getConfiguration('http').get<string>('proxy') }); }
+	catch (e) { proxyError = (e as Error).message; }
 	const ca = detectCaCert({ settingCaPath: s.claudeCode.caCertPath });
 	const writtenRaw = written.HTTPS_PROXY ?? written.https_proxy ?? written.HTTP_PROXY ?? '';
 	const storedUser = await ctx.secrets.get(PROXY_SECRET_USER);
 	const detectedHasCreds = !!(proxy && splitProxyCredentials(proxy.value).username);
 	return {
 		settingsPath: claudeUserSettingsPath(),
+		proxyError,
 		// redacted everywhere: these strings go to the webview, Doctor and logs
 		writtenProxy: redactProxyUrl(writtenRaw),
 		writtenHasCredentials: !!splitProxyCredentials(writtenRaw).username,

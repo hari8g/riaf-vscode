@@ -46,10 +46,26 @@ const clean = (v: unknown): string => typeof v === 'string' ? v.trim() : '';
 
 /** Claude Code refuses a proxy URL without a scheme, so normalise `host:port` → `http://host:port`. */
 export const normaliseProxyUrl = (u: string): string => {
-	const s = u.trim();
+	const s = u.trim().replace(/^["']+|["',;]+$/g, '').trim();   // tolerate pasted quotes / trailing comma
 	if (!s) { return ''; }
 	return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`;
 };
+
+/**
+ * Validate a proxy URL the way Claude Code will see it. Returns an error message, or undefined
+ * when valid. Catches the classic paste mistakes: a whole settings line, spaces, missing host.
+ */
+export function validateProxyUrl(u: string): string | undefined {
+	const s = normaliseProxyUrl(u);
+	if (!s) { return undefined; }                                       // empty = auto-detect, fine
+	if (/\s|"/.test(s)) { return `proxy URL must be just the URL (got: ${s.slice(0, 60)}…). Example: http://proxy.example.com:8080`; }
+	let p: URL;
+	try { p = new URL(s); } catch { return `not a valid URL: ${s.slice(0, 60)}`; }
+	if (p.protocol !== 'http:' && p.protocol !== 'https:') { return `proxy URL must start with http:// or https:// (got ${p.protocol})`; }
+	if (!p.hostname || p.hostname.includes(':')) { return `proxy URL has no host name: ${s.slice(0, 60)}`; }
+	if (p.pathname && p.pathname !== '/') { return `proxy URL must not have a path (got ${p.pathname})`; }
+	return undefined;
+}
 
 /* ── credentials ─────────────────────────────────────────────────────────────────────────── */
 
@@ -91,6 +107,8 @@ export function redactProxyUrl(u: string): string {
 }
 
 export function detectProxy(i: ProxyInputs): Detected {
+	const bad = validateProxyUrl(i.settingProxy ?? '');
+	if (bad) { throw new Error(`riaf.claudeCode.proxyUrl: ${bad}`); }
 	const env = i.env ?? process.env;
 	const npm = i.npmConfig ?? npmConfigGet;
 	const candidates: [string, string][] = [

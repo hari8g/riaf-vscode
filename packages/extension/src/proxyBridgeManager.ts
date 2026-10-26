@@ -32,8 +32,10 @@ export class ProxyBridgeManager implements vscode.Disposable {
 	/** The corporate proxy the bridge would forward to (redacted for display). */
 	upstreamDescription(): string {
 		const s = readSettings();
-		const d = detectProxy({ settingProxy: s.claudeCode.proxyUrl, vscodeProxy: vscode.workspace.getConfiguration('http').get<string>('proxy') });
-		return d ? `${redactProxyUrl(d.value)} [${d.source}]` : 'none detected';
+		try {
+			const d = detectProxy({ settingProxy: s.claudeCode.proxyUrl, vscodeProxy: vscode.workspace.getConfiguration('http').get<string>('proxy') });
+			return d ? `${redactProxyUrl(d.value)} [${d.source}]` : 'none detected';
+		} catch (e) { return `invalid: ${(e as Error).message}`; }
 	}
 
 	/** Start if enabled and an upstream proxy is known. Resolves with the bridge or undefined (reason in lastError). */
@@ -48,7 +50,9 @@ export class ProxyBridgeManager implements vscode.Disposable {
 		const s = readSettings();
 		this._lastError = undefined;
 		if (!s.claudeCode.proxyBridge) { this._lastError = 'disabled (riaf.claudeCode.proxyBridge)'; return undefined; }
-		const d = detectProxy({ settingProxy: s.claudeCode.proxyUrl, vscodeProxy: vscode.workspace.getConfiguration('http').get<string>('proxy') });
+		let d: ReturnType<typeof detectProxy>;
+		try { d = detectProxy({ settingProxy: s.claudeCode.proxyUrl, vscodeProxy: vscode.workspace.getConfiguration('http').get<string>('proxy') }); }
+		catch (e) { this._lastError = (e as Error).message; this._out.appendLine(this._lastError); return undefined; }
 		if (!d) { this._lastError = 'no upstream proxy detected (set riaf.claudeCode.proxyUrl)'; return undefined; }
 		const parts = splitProxyCredentials(d.value);
 		const up = parseUpstream(parts.url);
