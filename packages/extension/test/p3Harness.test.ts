@@ -13,6 +13,8 @@ import type { ModelTransport, TransportRequest, TransportResult } from '../src/m
 import { findRuleFiles, loadProjectRules } from '../src/projectRules.js';
 import { BUILTIN_DENY, evaluateCommand, findWriteOutsideWorkspace, matchesAllowlist, seatbeltAvailable, seatbeltProfile, wrapInSeatbelt, type CommandPolicy } from '../src/tools/commandPolicy.js';
 import { loadHooks, runPostEditHooks, runPreToolHooks } from '../src/tools/hooks.js';
+import { resolveShell, shellArgv, toPosixPath } from '../src/tools/shell.js';
+const POSIX_SHELL = resolveShell().kind === 'posix';   // on Windows: Git Bash present
 import { READ_ONLY_TOOLS, TOOL_SPECS, executeTool, type ToolContext } from '../src/tools/toolRegistry.js';
 import { UsageMeter } from '../src/usage.js';
 
@@ -93,7 +95,7 @@ describe('P3 command policy', () => {
 		expect(evaluateCommand('node scripts/migrate.js', policy(root)).verdict).toBe('ask');
 	});
 
-	it('run_command: deny returns an error without prompting; ask prompts; allow runs silently', async () => {
+	it.skipIf(!POSIX_SHELL)('run_command: deny returns an error without prompting; ask prompts; allow runs silently', async () => {
 		const { root, index, ctx } = await fixture();
 		let prompts = 0;
 		(vscode.window as any).showInformationMessage = async () => { prompts++; return 'Run'; };
@@ -140,7 +142,7 @@ describe('P3 command policy', () => {
 		await index.close();
 	});
 
-	it('seatbelt profile confines writes to the workspace and the wrapper invokes sandbox-exec', () => {
+	it.skipIf(process.platform === 'win32')('seatbelt profile confines writes to the workspace and the wrapper invokes sandbox-exec', () => {
 		const prof = seatbeltProfile('/work/repo', ['/opt/cache']);
 		expect(prof).toContain('(deny file-write*)');
 		expect(prof).toContain('(subpath "/work/repo")');
@@ -149,6 +151,23 @@ describe('P3 command policy', () => {
 		expect(w.file).toBe('/usr/bin/sandbox-exec');
 		expect(w.args[0]).toBe('-p');
 		expect(w.args.slice(-3)).toEqual(['/bin/sh', '-c', 'npm test']);
+	});
+
+	it('resolves a shell: POSIX everywhere except a Windows box without Git Bash', () => {
+		const sh = resolveShell();
+		expect(['posix', 'cmd']).toContain(sh.kind);
+		if (process.platform !== 'win32') { expect(sh.file).toBe('/bin/sh'); }
+		expect(shellArgv('echo hi', sh).args.at(-1)).toBe('echo hi');
+		expect(toPosixPath('C:\\work\\repo')).toBe(process.platform === 'win32' ? '/c/work/repo' : 'C:\\work\\repo');
+	});
+
+	it('a pre-tool hook whose shell cannot start blocks the call instead of silently allowing', async () => {
+		const wsRoot = mkdtempSync(join(tmpdir(), 'riaf-hooks-'));
+		// an unusable cwd makes the spawn itself fail (ENOENT) on every platform
+		const cfg = loadHooks(wsRoot, { preTool: [{ matcher: '^edit_file$', command: 'true' }] });
+		const r = await runPreToolHooks(cfg, { tool: 'edit_file', args: {}, workspace: join(wsRoot, 'does-not-exist') });
+		expect(r.allow).toBe(false);
+		expect((r as any).reason).toMatch(/could not run/);
 	});
 
 	it.skipIf(!seatbeltAvailable())('seatbelt (macOS): a write outside the workspace is blocked, inside it succeeds', async () => {
@@ -178,7 +197,7 @@ describe('P3 hooks', () => {
 		expect(loadHooks(mkdtempSync(join(tmpdir(), 'riaf-nohooks-')))).toEqual({ preTool: [], postEdit: [] });
 	});
 
-	it('pre-tool hook blocks on exit code 2 or a JSON block decision, and gets the event on stdin/env', async () => {
+	it.skipIf(!POSIX_SHELL)('pre-tool hook blocks on exit code 2 or a JSON block decision, and gets the event on stdin/env', async () => {
 		const root = mkdtempSync(join(tmpdir(), 'riaf-hooks-'));
 		const cfg = loadHooks(root, {
 			preTool: [
@@ -206,7 +225,7 @@ describe('P3 hooks', () => {
 		expect(other.allow).toBe(true);
 	});
 
-	it('post-edit hook runs for matching files with RIAF_FILE set; failures are reported, not fatal', async () => {
+	it.skipIf(!POSIX_SHELL)('post-edit hook runs for matching files with RIAF_FILE set; failures are reported, not fatal', async () => {
 		const root = mkdtempSync(join(tmpdir(), 'riaf-hooks-'));
 		const cfg = loadHooks(root, { postEdit: [{ matcher: '\\.ts$', command: 'echo "$RIAF_FILE" > fmt.log' }, { matcher: '\\.ts$', command: 'echo boom >&2; exit 1' }] });
 		const out = await runPostEditHooks(cfg, root, 'src/a.ts');
@@ -216,7 +235,7 @@ describe('P3 hooks', () => {
 		expect(await runPostEditHooks(cfg, root, 'README.md')).toEqual([]);
 	});
 
-	it('executeTool enforces pre-tool hooks and reports post-edit hooks in the edit result', async () => {
+	it.skipIf(!POSIX_SHELL)('executeTool enforces pre-tool hooks and reports post-edit hooks in the edit result', async () => {
 		const { root, index, ctx } = await fixture();
 		writeFileSync(join(root, '.riaf-hooks.json'), '');
 		const hooks = loadHooks(root, {

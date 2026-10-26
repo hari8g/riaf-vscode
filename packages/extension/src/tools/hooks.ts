@@ -16,6 +16,7 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { shellArgv } from './shell.js';
 
 export type HookEntry = { matcher?: string; command: string; timeoutMs?: number };
 export type HookConfig = { preTool: HookEntry[]; postEdit: HookEntry[] };
@@ -47,14 +48,20 @@ const matches = (entry: HookEntry, subject: string): boolean => {
 	try { return new RegExp(entry.matcher).test(subject); } catch { return entry.matcher === subject; }
 };
 
-type RunResult = { code: number; stdout: string; stderr: string; timedOut: boolean };
+type RunResult = { code: number; stdout: string; stderr: string; timedOut: boolean; launchError?: string };
 
 function runHook(entry: HookEntry, cwd: string, env: Record<string, string>, stdin?: string): Promise<RunResult> {
 	return new Promise(resolve => {
-		const child = execFile('/bin/sh', ['-c', entry.command], { cwd, env: { ...process.env, ...env }, timeout: entry.timeoutMs ?? HOOK_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+		const { file, args } = shellArgv(entry.command);
+		const child = execFile(file, args, { cwd, env: { ...process.env, ...env }, timeout: entry.timeoutMs ?? HOOK_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
 			const e = err as (Error & { code?: number | string; killed?: boolean; signal?: string }) | null;
-			resolve({ code: e ? (typeof e.code === 'number' ? e.code : 1) : 0, stdout: String(stdout), stderr: String(stderr), timedOut: !!e?.killed || e?.signal === 'SIGTERM' });
+			// A string code (ENOENT, EACCES) means the shell itself could not be started — not a hook verdict.
+			const launchError = e && typeof e.code === 'string' ? `${e.code}: cannot start ${file}` : undefined;
+			resolve({ code: e ? (typeof e.code === 'number' ? e.code : 1) : 0, stdout: String(stdout), stderr: String(stderr), timedOut: !!e?.killed || e?.signal === 'SIGTERM', launchError });
 		});
+		child.on('error', () => { /* surfaced through the callback's err */ });
+		// A hook may exit without reading stdin (e.g. `echo …`); the resulting EPIPE must not escape as an uncaught exception.
+		child.stdin?.on('error', () => { });
 		if (stdin !== undefined) { child.stdin?.end(stdin); }
 	});
 }
@@ -66,6 +73,8 @@ export async function runPreToolHooks(cfg: HookConfig, event: PreToolEvent): Pro
 		if (!matches(entry, event.tool)) { continue; }
 		const r = await runHook(entry, event.workspace, { RIAF_TOOL: event.tool, RIAF_WORKSPACE: event.workspace }, JSON.stringify(event));
 		if (r.timedOut) { notes.push(`hook "${entry.command}" timed out; allowed`); continue; }
+		// Fail closed: a guard that cannot run must not silently allow.
+		if (r.launchError) { return { allow: false, reason: `pre-tool hook "${entry.command}" could not run (${r.launchError}); set RIAF_SHELL or install Git Bash`, notes }; }
 		let decision: { decision?: string; reason?: string } | null = null;
 		const line = r.stdout.trim().split('\n').reverse().find(l => l.trim().startsWith('{'));
 		if (line) { try { decision = JSON.parse(line); } catch { /* not JSON */ } }
@@ -84,7 +93,7 @@ export async function runPostEditHooks(cfg: HookConfig, workspaceRoot: string, r
 	for (const entry of cfg.postEdit) {
 		if (!matches(entry, relPath)) { continue; }
 		const r = await runHook(entry, workspaceRoot, { RIAF_FILE: relPath, RIAF_WORKSPACE: workspaceRoot });
-		out.push(r.code === 0 ? `post-edit hook ok: ${entry.command}` : `post-edit hook failed (${r.timedOut ? 'timeout' : `exit ${r.code}`}): ${entry.command}${r.stderr.trim() ? ` — ${r.stderr.trim().slice(0, 200)}` : ''}`);
+		out.push(r.code === 0 ? `post-edit hook ok: ${entry.command}` : `post-edit hook failed (${r.launchError ?? (r.timedOut ? 'timeout' : `exit ${r.code}`)}): ${entry.command}${r.stderr.trim() ? ` — ${r.stderr.trim().slice(0, 200)}` : ''}`);
 	}
 	return out;
 }

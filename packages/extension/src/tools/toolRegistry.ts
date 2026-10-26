@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
-import { exec, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { relative, isAbsolute, join, posix } from 'node:path';
 import type { RiafIndex } from '@bosch-mps/riaf-core';
 import { removeAnsiEscapeCodes } from '@bosch-mps/token-opt';
 import type { ToolSpec } from '../modelTransport.js';
 import { proposeEdit } from './editApproval.js';
+import { shellArgv } from './shell.js';
 import { executeOrgTool, executeSearchTool, ORG_TOOL_NAMES, ORG_TOOL_SPECS, SEARCH_TOOL_NAMES, SEARCH_TOOL_SPECS } from './orgTools.js';
 import { executeGraphTool, formatReferences, GRAPH_TOOL_NAMES, GRAPH_TOOL_SPECS } from './graphTools.js';
 import type { SymbolEdge } from '@bosch-mps/riaf-core';
@@ -471,7 +472,8 @@ function runShell(command: string, cwd: string, timeoutMs: number, token?: vscod
 			const sandboxDenied = !!wrapper && /sandbox|Operation not permitted|EPERM/i.test(stderr);
 			resolve({ code: err ? ((err as any).code ?? 1) : 0, output, sandboxDenied });
 		};
-		const child = wrapper ? execFile(wrapper.file, wrapper.args, opts, done) : exec(command, opts, done);
+		const argv = wrapper ?? shellArgv(command);
+		const child = execFile(argv.file, argv.args, opts, done);
 		token?.onCancellationRequested(() => child.kill());
 	});
 }

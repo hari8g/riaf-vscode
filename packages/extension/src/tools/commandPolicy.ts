@@ -204,5 +204,5 @@ export function seatbeltProfile(workspaceRoot: string, extraWritable: string[] =
 
 /** argv to run `command` through Seatbelt: sandbox-exec -p <profile> /bin/sh -c <command>. */
 export function wrapInSeatbelt(command: string, workspaceRoot: string, extraWritable: string[] = []): { file: string; args: string[] } {
-	return { file: SANDBOX_EXEC, args: ['-p', seatbeltProfile(workspaceRoot, extraWritable), '/bin/sh', '-c', command] };
+	return { file: SANDBOX_EXEC, args: ['-p', seatbeltProfile(workspaceRoot, extraWritable), '/bin/sh', '-c', command] };  // seatbelt is macOS-only, so /bin/sh is right here
 }

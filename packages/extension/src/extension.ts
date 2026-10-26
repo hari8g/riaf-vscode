@@ -8,6 +8,7 @@ import { createTransport, type ModelTransport } from './modelTransport.js';
 import { installSqliteLoader } from './sqliteLoader.js';
 import { openSettingsPanel } from './settingsPanel.js';
 import { registerProposalProvider } from './tools/editApproval.js';
+import { resolveShell } from './tools/shell.js';
 import { UsageMeter } from './usage.js';
 
 let indexes: IndexManager | undefined;
@@ -82,6 +83,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 				lines.push(`- vscode.lm models: ${models.length ? models.map(m => `${m.vendor}/${m.id}`).join(', ') : 'none (sign in to Copilot or configure riaf.gateway.*)'}`);
 			}
 			lines.push(`- proxy: http.proxy=${vscode.workspace.getConfiguration('http').get('proxy') || '(system)'} · http.proxySupport=${vscode.workspace.getConfiguration('http').get('proxySupport')}`);
+			{ const sh = resolveShell(); lines.push(`- shell for commands/hooks: ${sh.source}${sh.kind === 'cmd' ? '  ⚠ install Git for Windows (Git Bash) or set RIAF_SHELL' : ''}`); }
 			const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: lines.join('\n') });
 			await vscode.window.showTextDocument(doc, { preview: true });
 		}),
