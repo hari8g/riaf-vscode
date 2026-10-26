@@ -221,7 +221,7 @@ function Usage({ usage, transportId, call }: { usage?: { session: UsageTotals; a
 
 function ClaudeCode({ status, bridge, call, get, set }: P & { status?: HostResponse['claudeCode']; bridge?: HostResponse['bridge']; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
 	const n = status?.network;
-	const proxyOk = !!n?.writtenProxy && (!n.detectedProxy || n.writtenProxy === n.detectedProxy);
+	const proxyOk = !!n?.writtenProxy && n.upToDate;
 	return (
 		<Section id="claude" title="Claude Code" desc="Developers using Claude Code get the same index through a local MCP server plus /riaf-plan, /riaf-verify and /riaf-context commands. Setup also writes the corporate proxy for Claude Code itself.">
 			<div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -235,7 +235,7 @@ function ClaudeCode({ status, bridge, call, get, set }: P & { status?: HostRespo
 			<h3 style={{ fontSize: 14, fontWeight: 600, margin: '14px 0 2px' }}>Corporate network for Claude Code</h3>
 			<div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>Claude Code reads the proxy from <code>{n?.settingsPath ?? '~/.claude/settings.json'}</code>, not from npm or VS Code. Setup writes what it detects; override below if detection is wrong.</div>
 			{n && <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-				<Badge ok={proxyOk} warn={!n.writtenProxy && !!n.detectedProxy} text={n.writtenProxy ? `written: HTTPS_PROXY=${n.writtenProxy}${n.detectedProxy && n.writtenProxy !== n.detectedProxy ? ` (detected now: ${n.detectedProxy})` : ''}` : n.detectedProxy ? `detected ${n.detectedProxy} [${n.detectedProxySource}] — not yet written, run setup` : 'no proxy detected or written'} />
+				<Badge ok={proxyOk} warn={!n.writtenProxy && !!n.detectedProxy} text={n.writtenProxy ? `written: HTTPS_PROXY=${n.writtenProxy}${!n.upToDate ? ` (detected now: ${n.detectedProxy} — run setup)` : ''}` : n.detectedProxy ? `detected ${n.detectedProxy} [${n.detectedProxySource}] — not yet written, run setup` : 'no proxy detected or written'} />
 				<Badge ok={!!n.writtenCa} warn={!n.writtenCa && n.caRequiredHint && !!n.detectedProxy} text={n.writtenCa ? `written: NODE_EXTRA_CA_CERTS=${n.writtenCa}` : n.detectedCa ? `CA detected ${n.detectedCa} [${n.detectedCaSource}] — run setup` : n.caRequiredHint ? 'no CA bundle: needed if the proxy inspects TLS (Node < 22.15)' : 'no CA bundle (OS store will be used)'} />
 			</div>}
 			{n && <Badge ok={n.credentialSource !== 'none'} warn={n.credentialSource === 'none' && !!n.detectedProxy} text={n.credentialSource === 'url' ? `credentials in the detected proxy URL (${n.credentialUser})` : n.credentialSource === 'secrets' ? `credentials stored in the OS credential store (${n.credentialUser})` : 'no proxy credentials — needed if the proxy asks for a user name and password'} />}

@@ -86,6 +86,8 @@ export async function claudeCodeNetworkStatus(ctx: vscode.ExtensionContext) {
 		writtenHasCredentials: !!splitProxyCredentials(writtenRaw).username,
 		writtenCa: written.NODE_EXTRA_CA_CERTS ?? '',
 		detectedProxy: proxy ? redactProxyUrl(proxy.value) : '', detectedProxySource: proxy?.source ?? '',
+		/** True when what Claude Code has matches what we would write now (compared without credentials; a bridge URL counts as matching when the bridge is on). */
+		upToDate: !proxy || splitProxyCredentials(writtenRaw).url === splitProxyCredentials(proxy.value).url || (s.claudeCode.proxyBridge && /^http:\/\/127\.0\.0\.1:\d+$/.test(writtenRaw)),
 		credentialSource: detectedHasCreds ? 'url' as const : storedUser ? 'secrets' as const : 'none' as const,
 		credentialUser: detectedHasCreds ? (splitProxyCredentials(proxy!.value).username ?? '') : (storedUser ?? ''),
 		detectedCa: ca?.value ?? '', detectedCaSource: ca?.source ?? '',

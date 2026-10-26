@@ -107,7 +107,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 				}
 				lines.push(`  proxy credentials: ${n.credentialSource === 'url' ? `in the detected URL (${n.credentialUser})` : n.credentialSource === 'secrets' ? `stored in the OS credential store (${n.credentialUser})` : 'none — run "RIAF: Set Claude Code proxy credentials" if the proxy requires sign-in'}`);
 				lines.push(`  detected now: proxy=${n.detectedProxy ? `${n.detectedProxy} [${n.detectedProxySource}]` : 'none'} · CA=${n.detectedCa ? `${n.detectedCa} [${n.detectedCaSource}]` : 'none'}${n.caRequiredHint && !n.detectedCa ? '  ⚠ Node < 22.15: a TLS-inspecting proxy needs riaf.claudeCode.caCertPath' : ''}`);
-				if (n.detectedProxy && n.writtenProxy !== n.detectedProxy) { lines.push('  → run "RIAF: Set up Claude Code" to write the detected proxy for Claude Code'); }
+				if (!n.upToDate) { lines.push('  → run "RIAF: Set up Claude Code" to write the detected proxy for Claude Code'); }
 			}
 			const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: lines.join('\n') });
 			await vscode.window.showTextDocument(doc, { preview: true });
