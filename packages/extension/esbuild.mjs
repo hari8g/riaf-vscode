@@ -1,13 +1,25 @@
 // Bundles the extension host entry (CJS, VS Code requires it) and the MCP server entry (ESM, run by node).
-// Both pull @bosch-mps/riaf-core and @bosch-mps/token-opt from source via workspaces.
+// Workspace packages are bundled from TypeScript source. Their package exports point at dist/, which
+// does not exist on a clean checkout, and `npm run build -ws` builds this package first.
 // @sqlite.org/sqlite-wasm stays external: it is ESM-only and resolves sqlite3.wasm via import.meta.url,
 // so we vendor it next to the bundle (scripts/vendor-sqlite.mjs) and dynamic-import it by file URL.
 import * as esbuild from 'esbuild';
 import { rmSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const watch = process.argv.includes('--watch');
 const production = process.argv.includes('--production');
-rmSync('dist', { recursive: true, force: true });
+const here = dirname(fileURLToPath(import.meta.url));
+const packages = resolve(here, '..');
+// Windows holds dist files open briefly (AV, extension host). Retry instead of failing the build.
+rmSync(resolve(here, 'dist'), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+
+const alias = {
+  '@bosch-mps/riaf-core': resolve(packages, 'riaf-core/src/index.ts'),
+  '@bosch-mps/token-opt': resolve(packages, 'token-opt/src/index.ts'),
+  '@bosch-mps/riaf-engine': resolve(packages, 'riaf-engine/src/index.ts'),
+};
 
 /** @type {import('esbuild').BuildOptions} */
 const common = {
@@ -17,6 +29,7 @@ const common = {
   sourcemap: !production,
   minify: production,
   logLevel: 'info',
+  alias,
   external: ['vscode', '@sqlite.org/sqlite-wasm'],
   define: { 'process.env.NODE_ENV': production ? '"production"' : '"development"' },
 };

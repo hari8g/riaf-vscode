@@ -1298,7 +1298,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p webview/tsconfig.json --noEmit",
     "test": "vitest run",
     "vendor": "node scripts/vendor-sqlite.mjs",
-    "package": "npm run typecheck && node esbuild.mjs --production && npm run vendor && vsce package --no-dependencies --allow-missing-repository --out ../../riaf-vscode-0.1.0.vsix"
+    "package": "npm run typecheck && node esbuild.mjs --production && npm run vendor && node scripts/vsce-package.mjs"
   },
   "dependencies": {
     "@bosch-mps/riaf-core": "0.1.0",

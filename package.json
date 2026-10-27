@@ -6,10 +6,10 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -ws --if-present",
-    "typecheck": "npm run typecheck -ws --if-present",
+    "build": "npm run build -w packages/riaf-core -w packages/token-opt -w packages/riaf-engine && npm run build -w packages/extension",
+    "typecheck": "npm run build -w packages/riaf-core -w packages/token-opt -w packages/riaf-engine && npm run typecheck -ws --if-present",
     "test": "npm run test -ws --if-present",
-    "package": "npm run package -w packages/extension",
+    "package": "npm run build -w packages/riaf-core -w packages/token-opt -w packages/riaf-engine && npm run package -w packages/extension",
     "pretest": "npm run build -w packages/riaf-core -w packages/token-opt -w packages/riaf-engine"
   },
   "devDependencies": {

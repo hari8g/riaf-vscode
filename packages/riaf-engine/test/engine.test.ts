@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { executeCli, FileLedger, parseCriticResponse, parseGitNameOnly, parsePlanDocument, parseTestOutput, pipelineBlastRadius, runTask, scanSecurity, verifySubtask, coChangeCounts } from '../src/index.js';
+import { cliEntryMatches } from '../src/cli.js';
+import { pathToFileURL } from 'node:url';
 
 const planJson = JSON.stringify({
 	subtasks: [
@@ -104,6 +106,20 @@ describe('analysis helpers', () => {
 		expect(coChangeCounts(commits).get('src/a.ts')?.get('src/b.ts')).toBe(1);
 		const findings = scanSecurity([{ path: 'src/a.ts', text: 'const password = "hunter2";\neval(x);\n' }]);
 		expect(findings.map(f => f.rule)).toEqual(['password-assign', 'eval']);
+	});
+});
+
+describe('cli entry', () => {
+	it('matches only dist/cliMain.js, and ignores drive-letter case on Windows', () => {
+		const file = join(tmpdir(), 'dist', 'cliMain.js');
+		const url = pathToFileURL(file).href;
+		expect(cliEntryMatches(undefined, url)).toBe(false);
+		expect(cliEntryMatches(file, 'not a url')).toBe(false);
+		expect(cliEntryMatches(file, pathToFileURL(join(tmpdir(), 'dist', 'mcp.mjs')).href)).toBe(false);
+		expect(cliEntryMatches(file, url)).toBe(true);
+		const otherCase = join(tmpdir(), 'dist', 'CLIMain.js');
+		expect(cliEntryMatches(otherCase, url, 'win32')).toBe(true);
+		expect(cliEntryMatches(otherCase, url, 'linux')).toBe(false);
 	});
 });
 

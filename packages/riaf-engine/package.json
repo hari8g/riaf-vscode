@@ -12,7 +12,7 @@
     }
   },
   "files": ["dist"],
-  "bin": { "riaf": "./dist/cli.js" },
+  "bin": { "riaf": "./dist/cliMain.js" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

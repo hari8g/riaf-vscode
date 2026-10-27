@@ -1,11 +1,12 @@
-#!/usr/bin/env node
 /**
  * `riaf run "<task>" --repo .` plans, edits via the gateway, and verifies.
  * `riaf status` and `riaf resume` read the same `.riaf/runs` ledger as the extension.
+ * The process entry lives in cliMain.ts so importing this module never calls process.exit
+ * (the extension bundles the package as CommonJS, where import.meta.url is empty).
  */
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runTask } from './engine.js';
 import { FileLedger } from './ledger.js';
 import { renderLedger } from './engine.js';
@@ -104,7 +105,18 @@ export async function executeCli(argv: string[], io: CliIo = {}): Promise<number
 	return run.status === 'done' ? 0 : 1;
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
-if (isMain) {
-	executeCli(process.argv.slice(2)).then(code => process.exit(code)).catch(e => { console.error(e); process.exit(1); });
+/**
+ * True only when Node was started on dist/cliMain.js.
+ * Windows paths differ by drive-letter case (`C:` vs `c:`), so that compare is case-insensitive.
+ * A bundled host (extension.js, mcp.mjs) does not match, and an empty import.meta.url returns false
+ * instead of throwing.
+ */
+export function cliEntryMatches(entry: string | undefined, moduleUrl: string, platform = process.platform): boolean {
+	if (!entry) { return false; }
+	let selfPath: string;
+	try { selfPath = fileURLToPath(moduleUrl); } catch { return false; }
+	if (basename(selfPath) !== 'cliMain.js') { return false; }
+	const selfUrl = pathToFileURL(resolve(selfPath)).href;
+	const entryUrl = pathToFileURL(resolve(entry)).href;
+	return platform === 'win32' ? selfUrl.toLowerCase() === entryUrl.toLowerCase() : selfUrl === entryUrl;
 }
