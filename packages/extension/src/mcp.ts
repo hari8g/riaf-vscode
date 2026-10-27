@@ -6,6 +6,7 @@
  *
  *   node dist/mcp.mjs --workspace /path/to/repo [--db /path/to/index.sqlite] [--reindex]
  */
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13,6 +14,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { RiafIndex, setSqliteModuleLoader, setTreeSitterWasmDir } from '@bosch-mps/riaf-core';
+import { FileLedger, nextReadySubtasks, renderLedger, verifySubtask } from '@bosch-mps/riaf-engine';
 import { executeOrgTool, executeSearchTool, ORG_TOOL_SPECS, SEARCH_TOOL_SPECS } from './tools/orgTools.js';
 import { executeGraphTool, GRAPH_TOOL_SPECS } from './tools/graphTools.js';
 
@@ -103,6 +105,57 @@ for (const spec of ORG_TOOL_SPECS) {
 	server.tool(spec.name, spec.description, zodFromJsonSchema(spec.inputSchema),
 		async (args: Record<string, unknown>) => text((await executeOrgTool(index, spec.name, args)) ?? `unknown tool ${spec.name}`));
 }
+
+const ledger = new FileLedger(workspaceRoot);
+const latest = () => { const rows = ledger.list(); return rows[0] ? ledger.load(rows[0].id) : undefined; };
+server.tool('plan_create', 'Write a run ledger from a JSON plan (subtasks array). Claude Code is the planner; RIAF stores the DAG.', { goal: z.string(), planJson: z.string() },
+	async ({ goal, planJson }) => {
+		const { parsePlanDocument } = await import('@bosch-mps/riaf-engine');
+		const subtasks = parsePlanDocument(planJson);
+		const run = ledger.create({ goal, subtasks });
+		return text(renderLedger(run));
+	});
+server.tool('plan_status', 'Render the latest run, or one id.', { id: z.string().optional() },
+	async ({ id }) => { const run = id ? ledger.load(id) : latest(); return text(run ? renderLedger(run) : 'No runs.'); });
+server.tool('plan_next', 'Subtasks whose dependencies are done.', { id: z.string().optional() },
+	async ({ id }) => { const run = id ? ledger.load(id) : latest(); return text(run ? nextReadySubtasks(run).map(s => `${s.id}: ${s.goal}`).join('\n') || 'none ready' : 'No runs.'); });
+server.tool('plan_mark', 'Set a subtask status: running, done, blocked, skipped.', { id: z.string().optional(), subtaskId: z.string(), status: z.enum(['running', 'done', 'blocked', 'skipped']), message: z.string().optional() },
+	async ({ id, subtaskId, status, message }) => {
+		const run = id ? ledger.load(id) : latest();
+		if (!run) { return text('No runs.'); }
+		ledger.setSubtaskStatus(run, subtaskId, status, message ?? status);
+		return text(renderLedger(run));
+	});
+server.tool('verify_subtask', 'Run the subtask acceptance checks against the working tree.', { id: z.string().optional(), subtaskId: z.string() },
+	async ({ id, subtaskId }) => {
+		const run = id ? ledger.load(id) : latest();
+		const sub = run?.subtasks.find(s => s.id === subtaskId);
+		if (!sub) { return text('subtask not found'); }
+		const result = await verifySubtask(sub, {
+			readFile: async p => { try { return (await import('node:fs')).readFileSync(join(workspaceRoot, p), 'utf8'); } catch { return null; } },
+			runCommand: command => new Promise(resolve => {
+				execFile(process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : 'sh', process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-lc', command], { cwd: workspaceRoot, timeout: 120_000, maxBuffer: 4_000_000 }, (err, stdout, stderr) => {
+					const raw = (err as { code?: unknown } | null)?.code;
+					const code = typeof raw === 'number' ? raw : err ? 1 : 0;
+					resolve({ code, output: `${stdout}\n${stderr}`.slice(0, 8_000) });
+				});
+			}),
+		});
+		return text(result.ok ? 'pass' : result.failures.join('\n'));
+	});
+server.tool('run_critic', 'Record a critic result. pass=false with fixJson adds one fix subtask.', { id: z.string().optional(), pass: z.boolean(), summary: z.string().optional(), fixJson: z.string().optional() },
+	async ({ id, pass, summary, fixJson }) => {
+		const run = id ? ledger.load(id) : latest();
+		if (!run) { return text('No runs.'); }
+		ledger.appendEvent(run, 'critic', pass ? 'pass' : `fix:${summary ?? ''}`);
+		if (!pass && fixJson) {
+			const { parsePlanDocument } = await import('@bosch-mps/riaf-engine');
+			const [fix] = parsePlanDocument(fixJson.includes('subtasks') ? fixJson : JSON.stringify({ subtasks: [JSON.parse(fixJson)] }));
+			run.subtasks.push({ ...fix, status: 'pending', attempts: 0, toolDigest: [], notes: '' });
+			ledger.save(run);
+		}
+		return text(renderLedger(run));
+	});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

@@ -47,10 +47,13 @@ export async function runExplore(task: string, deps: ExploreDeps, maxSteps = EXP
 	let lastText = '';
 	const cap = Math.max(1, Math.min(20, maxSteps));
 
+	const abort = new AbortController();
+	const cancelSub = subCtx.token?.onCancellationRequested(() => abort.abort());
+	try {
 	while (steps < cap) {
 		steps++;
-		if (subCtx.token?.isCancellationRequested) { break; }
-		const res = await deps.transport.call({ systemMessage: EXPLORE_SYSTEM, messages, tools });
+		if (abort.signal.aborted || subCtx.token?.isCancellationRequested) { break; }
+		const res = await deps.transport.call({ systemMessage: EXPLORE_SYSTEM, messages, tools, signal: abort.signal });
 		if (res.usage) { deps.onUsage?.(res.usage); }
 		if (res.text) { lastText = res.text; }
 		if (!res.toolCalls.length) { break; }
@@ -70,12 +73,15 @@ export async function runExplore(task: string, deps: ExploreDeps, maxSteps = EXP
 		if (steps === cap) {
 			// one last call without tools so the subagent writes its report
 			messages.push({ role: 'user', text: 'Step budget reached. Write the report now from what you have.' });
-			const fin = await deps.transport.call({ systemMessage: EXPLORE_SYSTEM, messages, tools: [] });
+			if (abort.signal.aborted) { break; }
+			const fin = await deps.transport.call({ systemMessage: EXPLORE_SYSTEM, messages, tools: [], signal: abort.signal });
 			if (fin.usage) { deps.onUsage?.(fin.usage); }
 			if (fin.text) { lastText = fin.text; }
 		}
 	}
-	const report = (lastText.trim() || 'The explore subagent produced no report.').slice(0, EXPLORE_REPORT_MAX_CHARS);
+	} finally { cancelSub?.dispose(); }
+	const cancelled = abort.signal.aborted || !!subCtx.token?.isCancellationRequested;
+	const report = (lastText.trim() || (cancelled ? 'Explore cancelled.' : 'The explore subagent produced no report.')).slice(0, EXPLORE_REPORT_MAX_CHARS);
 	deps.log?.(`explore: ${steps} steps, ${toolCalls} tool calls, ${refused} refused`);
 	return { report, steps, toolCalls, refused };
 }

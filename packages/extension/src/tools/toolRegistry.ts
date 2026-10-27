@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { relative, isAbsolute, join, posix } from 'node:path';
 import type { RiafIndex } from '@bosch-mps/riaf-core';
 import { removeAnsiEscapeCodes } from '@bosch-mps/token-opt';
+import { applySearchBoosts, conventionalTestPaths, parseTestOutput } from '@bosch-mps/riaf-engine';
 import type { ToolSpec } from '../modelTransport.js';
 import { proposeEdit } from './editApproval.js';
 import { shellArgv } from './shell.js';
@@ -12,6 +13,13 @@ import type { SymbolEdge } from '@bosch-mps/riaf-core';
 import { evaluateCommand, seatbeltAvailable, wrapInSeatbelt, type CommandPolicy } from './commandPolicy.js';
 import { runPostEditHooks, runPreToolHooks, type HookConfig } from './hooks.js';
 import { EXPLORE_SPEC, EXPLORE_TOOL_NAME, runExplore } from '../exploreAgent.js';
+import { EXTRA_TOOL_SPECS, executeExtraTool } from './extraTools.js';
+import { devServerCommand } from './terminalHeuristics.js';
+import { runPersistentCommand } from './persistentTerminals.js';
+import { callDiscoveredMcpTool } from '../mcpClient.js';
+import { readSettings } from '../config.js';
+import { createTransport } from '../modelTransport.js';
+import { noteInteraction, readCoChange, recentInteractions } from '../interactions.js';
 import type { ModelTransport } from '../modelTransport.js';
 import type { Checkpoint, CheckpointStore } from '../checkpoints.js';
 import type { SandboxMode } from '../config.js';
@@ -24,9 +32,10 @@ export const READ_ONLY_TOOLS = new Set([
 	...GRAPH_TOOL_NAMES,
 	...ORG_TOOL_NAMES,
 	EXPLORE_TOOL_NAME,
+	'get_symbol', 'get_dir_tree', 'read_lint_errors', 'search_web', 'verify_security_compliance', 'get_pipeline_blast_radius', 'get_iac_topology', 'list_mcp_tools',
 ]);
 export const EDIT_TOOLS = new Set(['edit_file', 'rewrite_file', 'create_file_or_folder', 'delete_file_or_folder']);
-export const COMMAND_TOOLS = new Set(['run_command', 'run_tests']);
+export const COMMAND_TOOLS = new Set(['run_command', 'run_tests', 'open_persistent_terminal', 'run_persistent_command', 'kill_persistent_terminal', 'mcp_call']);
 
 const str = (d: string) => ({ type: 'string', description: d });
 const num = (d: string) => ({ type: 'number', description: d });
@@ -52,6 +61,7 @@ export const TOOL_SPECS: ToolSpec[] = [
 	{ name: 'run_command', description: 'Run a shell command in the workspace root and return its output (the developer is asked to approve).', inputSchema: obj({ command: str('Shell command'), timeoutSec: num('default 120') }, ['command']) },
 	{ name: 'run_tests', description: 'Run the project\'s detected test command (or the given one) and return the trimmed output.', inputSchema: obj({ command: str('Override test command (optional)') }) },
 	...ORG_TOOL_SPECS,
+	...EXTRA_TOOL_SPECS,
 ];
 
 /* ───────────────────────────── execution ───────────────────────────── */
@@ -59,6 +69,7 @@ export const TOOL_SPECS: ToolSpec[] = [
 export interface ToolContext {
 	folder: vscode.WorkspaceFolder;
 	index: RiafIndex;
+	activeFile?: string;
 	requireEditApproval: boolean;
 	allowRunCommand: boolean;
 	/** When true, edit and command tools are refused even if the model calls them (plan / explain). */
@@ -75,6 +86,10 @@ export interface ToolContext {
 	checkpoint?: { store: CheckpointStore; current: Checkpoint };
 	/** Read language-server diagnostics for a file after it was written (ms to wait; 0 = read once, undefined = off). */
 	diagnosticsSettleMs?: number;
+	/** Default step cap for the explore subagent when the call omits maxSteps. */
+	exploreMaxSteps?: number;
+	/** SecretStorage for tools that need an API key (web search). */
+	secrets?: { get(key: string): Thenable<string | undefined> };
 	/** Needed by the `explore` subagent; absent in MCP / tests that do not exercise it. */
 	transport?: ModelTransport;
 	onSubagentUsage?: (usage: NonNullable<import('../modelTransport.js').TransportResult['usage']>, purpose: string) => void;
@@ -104,7 +119,7 @@ async function readText(uri: vscode.Uri): Promise<string> {
 export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolOutcome> {
 	try {
 		const a = args as Record<string, any>;
-		if (ctx.readOnly && (EDIT_TOOLS.has(name) || COMMAND_TOOLS.has(name))) {
+		if (ctx.readOnly && (EDIT_TOOLS.has(name) || COMMAND_TOOLS.has(name) || (name.startsWith('mcp_') && name !== 'list_mcp_tools'))) {
 			return { ok: false, error: `${name} is not available in this mode (read-only). Describe the change instead of applying it.` };
 		}
 		// Tool-call JSON that did not parse (output truncated mid-arguments) arrives as `_raw`.
@@ -119,18 +134,22 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 		}
 		switch (name) {
 			case EXPLORE_TOOL_NAME: {
-				if (!ctx.transport) { return { ok: false, error: 'explore is unavailable here (no model transport); use grep / search_codebase directly.' }; }
+				const exploreModel = readSettings().models.explore;
+				const exploreTransport = exploreModel ? await createTransport(undefined, exploreModel) ?? ctx.transport : ctx.transport;
+				if (!exploreTransport) { return { ok: false, error: 'explore is unavailable here (no model transport); use grep / search_codebase directly.' }; }
 				const task = String(a.task ?? '').trim();
 				if (!task) { return { ok: false, error: 'explore needs a `task`.' }; }
 				ctx.progress?.(`explore: ${task.slice(0, 80)}`);
 				const r = await runExplore(task, {
-					transport: ctx.transport, ctx, allSpecs: TOOL_SPECS, executeTool,
+					transport: exploreTransport, ctx, allSpecs: TOOL_SPECS, executeTool,
 					onUsage: u => ctx.onSubagentUsage?.(u, 'agent:explore'), log: ctx.log,
-				}, Number(a.maxSteps) || undefined);
+				}, Number(a.maxSteps) || ctx.exploreMaxSteps || undefined);
 				return { ok: true, result: clip(r.report), meta: { steps: r.steps, toolCalls: r.toolCalls, refused: r.refused } };
 			}
 			case 'search_codebase': {
-				const hits = await ctx.index.searchHybrid(String(a.query ?? ''), { limit: Number(a.limit) || 8, filePathPrefix: a.pathPrefix || undefined });
+				const hits = applySearchBoosts(await ctx.index.searchHybrid(String(a.query ?? ''), { limit: Number(a.limit) || 8, filePathPrefix: a.pathPrefix || undefined }), {
+					activeFile: ctx.activeFile, recent: recentInteractions(ctx.folder.uri.fsPath), coChange: readCoChange(ctx.folder.uri.fsPath),
+				});
 				if (!hits.length) { return { ok: true, result: 'No matches. Try different identifiers or search_symbols.' }; }
 				return { ok: true, result: clip(hits.map(h => `### ${h.filePath}:${h.startLine}-${h.endLine} (score ${h.score.toFixed(3)})\n${h.content}`).join('\n\n')), meta: { count: hits.length } };
 			}
@@ -168,6 +187,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 				const start = Math.max(1, Number(a.startLine) || 1);
 				const end = Math.min(lines.length, Number(a.endLine) || lines.length);
 				const slice = lines.slice(start - 1, end).map((l, i) => `${String(start + i).padStart(5)} | ${l}`).join('\n');
+				noteInteraction(ctx.folder.uri.fsPath, relPath(ctx, uri));
 				return { ok: true, result: clip(`${relPath(ctx, uri)} (lines ${start}-${end} of ${lines.length})\n${slice}`), meta: { totalFileLen: text.length, startLine: start, endLine: end, uri: uri.toString() } };
 			}
 			case 'search_in_file': {
@@ -187,7 +207,10 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 			}
 			case 'get_tests_for_file': {
 				const t = await (ctx.index as any).getTestsForFile?.(String(a.filePath));
-				return { ok: true, result: t?.length ? t.map((x: any) => typeof x === 'string' ? x : x.filePath).join('\n') : 'No covering tests found.' };
+				const indexed = (t ?? []).map((x: any) => typeof x === 'string' ? x : x.filePath).filter(Boolean);
+				const guessed = conventionalTestPaths(String(a.filePath ?? ''));
+				const lines = [...indexed, ...guessed.filter((g: string) => !indexed.includes(g)).map((g: string) => `${g} (convention)`)];
+				return { ok: true, result: lines.length ? lines.join('\n') : 'No covering tests found.' };
 			}
 			case 'edit_file': {
 				const uri = resolveInWorkspace(ctx, a.filePath);
@@ -199,7 +222,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 				for (const [i, e] of edits.entries()) {
 					if (typeof e?.search !== 'string' || typeof e?.replace !== 'string') { return { ok: false, error: `edit ${i + 1}: both \`search\` and \`replace\` must be strings.`, meta: { truncated: true } }; }
 					const r = applySearchReplace(next, e.search.split('\r\n').join('\n'), e.replace.split('\r\n').join('\n'));
-					if (!r.ok) { return { ok: false, error: `edit ${i + 1} of ${edits.length} in ${relPath(ctx, uri)}: ${r.error}`, meta: { editFailed: true } }; }
+					if (!r.ok) { return { ok: false, error: `EDIT NOT APPLIED (${i + 1} of ${edits.length}) in ${relPath(ctx, uri)}: ${r.error}`, meta: { editFailed: true } }; }
 					next = r.text;
 				}
 				if (eol !== '\n') { next = next.split('\n').join(eol); }
@@ -248,20 +271,36 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 				const sandboxOn = (ctx.sandbox ?? 'auto') !== 'off';
 				const verdict = sandboxOn ? evaluateCommand(command, policy) : evaluateCommand(command, { ...policy, workspaceRoot: '/' });
 				if (verdict.verdict === 'deny') { return { ok: false, error: `command refused: ${verdict.reason}\n$ ${command}`, meta: { denied: true } }; }
-				if (verdict.verdict === 'ask') {
+				if (verdict.verdict === 'ask' && readSettings().agent.approveTerminal === false) {
+					ctx.log?.(`[policy] terminal approval off: ${command}`);
+				} else if (verdict.verdict === 'ask') {
 					const approved = (await vscode.window.showInformationMessage(`RIAF agent wants to run:\n\n${command}`, { modal: true }, 'Run')) === 'Run';
 					if (!approved) { return { ok: false, error: 'developer rejected the command' }; }
 				} else { ctx.log?.(`[policy] ${verdict.reason}: ${command}`); }
 				ctx.progress?.(`$ ${command}`);
+				if (name === 'run_command' && devServerCommand(command)) {
+					const ran = await runPersistentCommand({ name: 'dev', command, cwd: ctx.folder.uri.fsPath, timeoutMs: (Number(a.timeoutSec) || 20) * 1000, devServer: true });
+					return ran.ok ? { ok: true, result: ran.result } : { ok: false, error: ran.result };
+				}
 				const useSeatbelt = sandboxOn && (ctx.sandbox === 'seatbelt' || ((ctx.sandbox ?? 'auto') === 'auto' && seatbeltAvailable()));
 				const out = await runShell(command, ctx.folder.uri.fsPath, (Number(a.timeoutSec) || 120) * 1000, ctx.token, useSeatbelt ? wrapInSeatbelt(command, ctx.folder.uri.fsPath, ctx.commandPolicy?.extraWritableDirs) : undefined);
 				const notes: string[] = [];
 				if (/(^|[\s;&|])(rm|rmdir|git\s+(clean|checkout|restore|reset))\b/.test(command)) { notes.push('(files removed or reverted by shell commands are not covered by RIAF checkpoints — recover them with git)'); }
 				if (out.sandboxDenied) { notes.push('(a write outside the workspace was blocked by the sandbox)'); }
-				const body = `${clip(out.output) || (out.code === 0 ? '(no output, exit 0)' : '')}${notes.length ? `\n${notes.join('\n')}` : ''}`;
+				const parsed = name === 'run_tests' ? parseTestOutput(out.output, command) : undefined;
+				const summary = parsed ? `\n\nparsed(${parsed.runner}): passed=${parsed.passed} failed=${parsed.failed.length}${parsed.failed.length ? ` [${parsed.failed.slice(0, 5).map(f => f.name).join(', ')}]` : ''}` : '';
+				const body = `${clip(out.output) || (out.code === 0 ? '(no output, exit 0)' : '')}${summary}${notes.length ? `\n${notes.join('\n')}` : ''}`;
 				return out.code === 0 ? { ok: true, result: body } : { ok: false, error: `exit ${out.code}\n${body}` };
 			}
 			default: {
+				if (name.startsWith('mcp_') && name !== 'mcp_call' && readSettings().agent.approveMcp) {
+					const approved = (await vscode.window.showInformationMessage(`RIAF agent wants to call MCP tool ${name}`, { modal: true }, 'Run')) === 'Run';
+					if (!approved) { return { ok: false, error: 'developer rejected the MCP call' }; }
+				}
+				const mcp = await callDiscoveredMcpTool(ctx.folder.uri.fsPath, name, a, readSettings().mcp.disabledServers);
+				if (mcp) { return mcp.ok ? { ok: true, result: mcp.result ?? '' } : { ok: false, error: mcp.error ?? 'mcp call failed' }; }
+				const extra = await executeExtraTool(name, a, ctx);
+				if (extra) { return extra.ok ? { ok: true, result: extra.result ?? '' } : { ok: false, error: extra.error ?? 'tool failed' }; }
 				const search = await executeSearchTool(ctx.index, name, a);
 				if (search !== undefined) { return { ok: true, result: clip(search) }; }
 				const graph = await executeGraphTool(ctx.index, name, a);

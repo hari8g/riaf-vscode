@@ -4,6 +4,24 @@ import { join } from 'node:path';
 import type { IndexManager } from './indexManager.js';
 import { readSettings } from './config.js';
 import { buildClaudeEnv, detectCaCert, detectProxy, nodeNeedsExplicitCa, redactProxyUrl, splitProxyCredentials, withProxyCredentials, writeClaudeUserSettings } from './claudeCodeNetwork.js';
+import { loadProjectRules } from './projectRules.js';
+import { readRules } from './rules.js';
+
+const RULES_MARKER = '<!-- riaf:rules -->';
+const PROJECT_RULES_MARKER = '<!-- riaf:project-rules -->';
+const PROJECT_RULES_END = '<!-- /riaf:project-rules -->';
+
+/** Plugin rules plus the repo's .riafrules / AGENTS.md / .riaf/rules, in a replaceable block. */
+export function mergeClaudeMd(existing: string | undefined, pluginRules: string, projectRules: string): string {
+	const project = projectRules.trim() ? `\n\n${PROJECT_RULES_MARKER}\n${projectRules.trim()}\n${PROJECT_RULES_END}` : '';
+	const block = `${RULES_MARKER}\n${pluginRules.trim()}${project}\n`;
+	if (!existing?.trim()) { return block; }
+	if (!existing.includes(RULES_MARKER)) { return `${existing.trimEnd()}\n\n${block}`; }
+	const projectRe = new RegExp(`${PROJECT_RULES_MARKER}[\\s\\S]*?${PROJECT_RULES_END}`);
+	if (project && projectRe.test(existing)) { return existing.replace(projectRe, project.trim()); }
+	if (project && !existing.includes(PROJECT_RULES_MARKER)) { return `${existing.trimEnd()}\n\n${project.trim()}\n`; }
+	return existing;
+}
 
 export const PROXY_SECRET_USER = 'riaf.claudeCode.proxyUsername';
 export const PROXY_SECRET_PASS = 'riaf.claudeCode.proxyPassword';
@@ -72,15 +90,17 @@ export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: Ind
 	const dst = join(root, '.claude');
 	mkdirSync(join(dst, 'commands'), { recursive: true });
 	cpSync(join(src, 'commands'), join(dst, 'commands'), { recursive: true });
+	if (existsSync(join(src, 'hooks'))) { cpSync(join(src, 'hooks'), join(dst, 'hooks'), { recursive: true }); }
+	const claudeSettings = join(dst, 'settings.json');
+	let currentSettings: unknown = {};
+	if (existsSync(claudeSettings)) { try { currentSettings = JSON.parse(readFileSync(claudeSettings, 'utf8')); } catch { currentSettings = {}; } }
+	const { mergeClaudeHooks } = await import('./claudeHooks.js');
+	writeFileSync(claudeSettings, JSON.stringify(mergeClaudeHooks(currentSettings, root), null, 2) + '\n');
 	const rulesSrc = readFileSync(join(src, 'CLAUDE.md'), 'utf8');
+	const projectRules = [await readRules(folder), loadProjectRules(root).text].filter(t => t.trim()).join('\n\n');
 	const claudeMd = join(root, 'CLAUDE.md');
-	const marker = '<!-- riaf:rules -->';
-	if (existsSync(claudeMd)) {
-		const cur = readFileSync(claudeMd, 'utf8');
-		if (!cur.includes(marker)) { writeFileSync(claudeMd, `${cur.trimEnd()}\n\n${marker}\n${rulesSrc}`); }
-	} else {
-		writeFileSync(claudeMd, `${marker}\n${rulesSrc}`);
-	}
+	const existing = existsSync(claudeMd) ? readFileSync(claudeMd, 'utf8') : undefined;
+	writeFileSync(claudeMd, mergeClaudeMd(existing, rulesSrc, projectRules));
 
 	// 3. network: proxy + CA for Claude Code itself (user-level ~/.claude/settings.json)
 	const s = readSettings();

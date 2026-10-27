@@ -3,6 +3,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PROXY_SECRET_USER, setProxyCredentials, setupClaudeCode } from './claudeCodeSetup.js';
 import { claudeUserSettingsPath, detectCaCert, detectProxy, nodeNeedsExplicitCa, readClaudeUserSettingsEnv, redactProxyUrl, splitProxyCredentials } from './claudeCodeNetwork.js';
+import { findRuleFiles } from './projectRules.js';
+import { probeOllama } from './providerHttp.js';
+import { loadMcpServers } from './mcpConfig.js';
+import { discoverMcpTools } from './mcpClient.js';
 import { readSettings } from './config.js';
 import type { IndexManager } from './indexManager.js';
 import { createTransport, type ModelTransport } from './modelTransport.js';
@@ -25,7 +29,13 @@ export const SETTING_KEYS = [
 	'agent.maxIterations', 'agent.maxReadOnlyCalls', 'agent.generatePlan', 'agent.autoVerify', 'agent.requireEditApproval', 'agent.allowRunCommand', 'agent.contextWindowRatio',
 	'agent.diagnosticsAfterEdit', 'agent.autoApproveDetectedTestCommand', 'agent.preApprovedCommands', 'agent.denyCommandPatterns',
 	'agent.sandbox', 'agent.hooks', 'agent.summarizeHistory', 'agent.exploreSubagent', 'agent.checkpoints',
+	'agent.maxConsecutiveToolFails', 'agent.llmStreamStallTimeoutMs', 'agent.exploreMaxSteps', 'agent.diagnosticsSettleMs',
+	'agent.enableLightAgent', 'agent.enableParallelReadBatching', 'agent.sessionBudgetUsd', 'agent.sandboxVerificationNudge',
 	'claudeCode.writeUserSettings', 'claudeCode.proxyUrl', 'claudeCode.noProxy', 'claudeCode.caCertPath', 'claudeCode.proxyBridge', 'claudeCode.proxyBridgePort',
+	'models.main', 'models.plan', 'models.summary', 'models.explore', 'models.critic', 'models.commit', 'models.autocomplete',
+	'general.aiInstructions', 'general.disableSystemPrompt', 'general.metricsOptOut',
+	'webSearch.enabled', 'webSearch.provider', 'security.extraRules', 'mcp.disabledServers',
+	'providers', 'agent.approveTerminal', 'agent.approveMcp',
 ] as const;
 
 import type { ProxyBridgeManager } from './proxyBridgeManager.js';
@@ -45,7 +55,7 @@ export function snapshotSettings(): Record<string, unknown> {
 
 async function statusBlock(d: PanelDeps): Promise<HostResponse> {
 	const folder = d.indexes.folderFor(vscode.window.activeTextEditor?.document.uri);
-	const out: HostResponse = { settings: snapshotSettings(), usage: { session: d.usage.session, allTime: d.usage.allTime }, transportId: d.transport()?.id };
+	const out: HostResponse = { settings: snapshotSettings(), usage: { session: d.usage.session, allTime: d.usage.allTime, days: d.usage.history(), byProvider: d.usage.byProvider, cacheEfficiency: d.usage.cacheEfficiency() }, transportId: d.transport()?.id };
 	if (folder) {
 		try {
 			const idx = await d.indexes.get(folder);
@@ -63,6 +73,12 @@ async function statusBlock(d: PanelDeps): Promise<HostResponse> {
 			network: await claudeCodeNetworkStatus(d.ctx),
 			bridge: d.bridge?.status(),
 		};
+	}
+	out.mcp = mcpBlock(folder?.uri.fsPath ?? '');
+	if (folder) {
+		const sources = findRuleFiles(folder.uri.fsPath);
+		if (existsSync(join(folder.uri.fsPath, '.riafrules'))) { sources.unshift('.riafrules'); }
+		out.ruleSources = sources;
 	}
 	if (!readSettings().gateway.url) {
 		try { out.models = (await vscode.lm.selectChatModels()).map(m => `${m.vendor}/${m.id}`); } catch { out.models = []; }
@@ -95,6 +111,20 @@ export async function claudeCodeNetworkStatus(ctx: vscode.ExtensionContext) {
 		credentialUser: detectedHasCreds ? (splitProxyCredentials(proxy!.value).username ?? '') : (storedUser ?? ''),
 		detectedCa: ca?.value ?? '', detectedCaSource: ca?.source ?? '',
 		caRequiredHint: nodeNeedsExplicitCa(),
+	};
+}
+
+function mcpBlock(root: string, probed?: { errors: Map<string, string>; tools: Map<string, string[]> }): { servers: { name: string; transport: string; target: string; enabled: boolean; tools: string[]; error?: string }[] } {
+	const disabled = new Set(readSettings().mcp.disabledServers);
+	return {
+		servers: loadMcpServers(root).map(server => ({
+			name: server.name,
+			transport: server.transport,
+			target: server.url ?? [server.command, ...server.args].filter(Boolean).join(' '),
+			enabled: !disabled.has(server.name),
+			tools: probed?.tools.get(server.name) ?? [],
+			error: probed?.errors.get(server.name),
+		})),
 	};
 }
 
@@ -137,7 +167,23 @@ export async function handle(req: HostRequest, d: PanelDeps): Promise<HostRespon
 		case 'openOutput': d.indexes.output.show(true); return {};
 		case 'openReport': await vscode.commands.executeCommand('riaf.showReport'); return {};
 		case 'openGraph': await vscode.commands.executeCommand('riaf.showContextGraph'); return {};
-		case 'resetUsage': d.usage.resetAllTime(); return { usage: { session: d.usage.session, allTime: d.usage.allTime } };
+		case 'resetUsage': d.usage.resetAllTime(); return { usage: { session: d.usage.session, allTime: d.usage.allTime, days: d.usage.history(), byProvider: d.usage.byProvider, cacheEfficiency: d.usage.cacheEfficiency() } };
+		case 'detectProviders': {
+			const base = readSettings().providers.ollamaUrl || 'http://127.0.0.1:11434';
+			try { return { detected: { ollama: await probeOllama(base, globalThis.fetch) } }; }
+			catch { return { detected: { ollama: [] } }; }
+		}
+		case 'mcpRefresh': {
+			const root = folder?.uri.fsPath ?? '';
+			const found = await discoverMcpTools(root, readSettings().mcp.disabledServers);
+			const tools = new Map<string, string[]>();
+			for (const binding of found.bindings) {
+				const list = tools.get(binding.server) ?? [];
+				list.push(binding.tool);
+				tools.set(binding.server, list);
+			}
+			return { mcp: mcpBlock(root, { errors: found.errors, tools }) };
+		}
 		default: return { error: `unknown request ${req.type}` };
 	}
 }
@@ -164,7 +210,7 @@ export function openSettingsPanel(d: PanelDeps): void {
 		void panel?.webview.postMessage({ id: m.id, res });
 	}));
 	// live pushes: usage ticks and settings edited elsewhere
-	subs.push(d.usage.onDidChange(() => void panel?.webview.postMessage({ push: { usage: { session: d.usage.session, allTime: d.usage.allTime } } })));
+	subs.push(d.usage.onDidChange(() => void panel?.webview.postMessage({ push: { usage: { session: d.usage.session, allTime: d.usage.allTime, days: d.usage.history(), byProvider: d.usage.byProvider, cacheEfficiency: d.usage.cacheEfficiency() } } })));
 	subs.push(vscode.workspace.onDidChangeConfiguration(e => { if (e.affectsConfiguration('riaf')) { void panel?.webview.postMessage({ push: { settings: snapshotSettings() } }); } }));
 	panel.onDidDispose(() => { subs.forEach(s => s.dispose()); panel = undefined; });
 }

@@ -6,6 +6,7 @@ import { RiafIndex, type IndexProgress, type RepoIntelligenceIndexingStats } fro
 import { readSettings, type RiafSettings } from './config.js';
 import type { ModelTransport } from './modelTransport.js';
 import { getGatewayHeaders } from './modelTransport.js';
+import { outboundFetch } from './proxiedFetch.js';
 
 /** VS Code ships ripgrep under its app root; use it so `grep` works without anything on PATH. */
 function bundledRipgrep(): string | undefined {
@@ -109,6 +110,7 @@ export class IndexManager implements vscode.Disposable {
 			model: s.embeddings.model,
 			// resolved per request so a refreshed SSO token is picked up without reopening the index
 			headers: () => getGatewayHeaders(),
+			fetchImpl: async (url: string, init: RequestInit) => (await outboundFetch())(url, init),
 		};
 	}
 

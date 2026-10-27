@@ -44,6 +44,7 @@ export const BUILTIN_DENY: { pattern: RegExp; reason: string }[] = [
 	{ pattern: /\bdocker\s+(system\s+prune|rm\s+-f\s+\$\(docker\s+ps)/, reason: 'destructive docker cleanup' },
 	{ pattern: /\b(aws|gcloud|az)\s+\S*\s*(delete|rm|destroy|terminate)\b|\bterraform\s+(destroy|apply\s+-auto-approve)/, reason: 'destructive cloud operation' },
 	{ pattern: /\bhistory\s+-c\b|\bunset\s+HISTFILE\b/, reason: 'tampering with shell history' },
+	{ pattern: /<<-?\s*['"]?[A-Za-z_]/, reason: 'heredoc (write the script to a file and run that instead)' },
 ];
 
 const WRITE_VERBS = /(^|[;&|]\s*|\s)(rm|rmdir|mv|cp|tee|touch|mkdir|ln|chmod|chown|truncate|install|rsync|unzip|tar|dd|sed\s+-i[^\s]*|git\s+init|git\s+clone|npm\s+init|cargo\s+new|cargo\s+init)\s/;

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { clearProviderRateLimitCooldown } from '@bosch-mps/token-opt';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +32,8 @@ async function fixture() {
 }
 
 describe('runAgent', () => {
+	afterEach(() => { clearProviderRateLimitCooldown('liteLLM', 'claude-sonnet-4-5'); });
+
 	it('plans, searches, edits with one combined edit_file call, verifies, and stops', async () => {
 		const { root, index, folder } = await fixture();
 		const edit = { id: 't2', name: 'edit_file', args: { filePath: 'src/calc.ts', edits: [{ search: 'return a - b; // bug', replace: 'return a + b;' }] } };

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { IndexManager } from './indexManager.js';
+import { LM_TOOLS, LM_TOOLS_ALREADY_CONTRIBUTED } from './lmToolCatalog.js';
 import { executeTool } from './tools/toolRegistry.js';
 
 /**
@@ -24,5 +25,7 @@ export function registerLmTools(ctx: vscode.ExtensionContext, indexes: IndexMana
 		vscode.lm.registerTool('riaf_search_codebase', { invoke: run('search_codebase'), prepareInvocation: prep(i => `Searching codebase for "${i.query}"`) }),
 		vscode.lm.registerTool('riaf_context_profile', { invoke: run('get_context_profile'), prepareInvocation: prep(i => i.filePath ? `Context profile for ${i.filePath}` : 'Workspace profile') }),
 		vscode.lm.registerTool('riaf_search_symbols', { invoke: run('search_symbols'), prepareInvocation: prep(i => `Searching symbols for "${i.query}"`) }),
+		...LM_TOOLS.filter(t => !(LM_TOOLS_ALREADY_CONTRIBUTED as readonly string[]).includes(t.name)).map(t =>
+			vscode.lm.registerTool(`riaf_${t.name}`, { invoke: run(t.name), prepareInvocation: prep(() => t.display) })),
 	);
 }

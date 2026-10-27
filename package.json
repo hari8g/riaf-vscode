@@ -10,7 +10,7 @@
     "typecheck": "npm run typecheck -ws --if-present",
     "test": "npm run test -ws --if-present",
     "package": "npm run package -w packages/extension",
-    "pretest": "npm run build -w packages/riaf-core -w packages/token-opt"
+    "pretest": "npm run build -w packages/riaf-core -w packages/token-opt -w packages/riaf-engine"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

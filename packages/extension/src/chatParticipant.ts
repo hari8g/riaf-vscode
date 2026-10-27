@@ -1,13 +1,19 @@
 import * as vscode from 'vscode';
 import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
 import { generateUuid, type ChatMessage } from '@bosch-mps/token-opt';
+import { readdirSync, readFileSync } from 'node:fs';
+import { buildContextMarkdown } from './contextDoc.js';
+import { handleEngineCommand } from './engineHost.js';
+import { formatNotes, selectNotes } from './notes.js';
 import { runAgent, type AgentMode } from './agentLoop.js';
 import { CheckpointStore } from './checkpoints.js';
 import { readSettings } from './config.js';
 import type { IndexManager } from './indexManager.js';
 import { createTransport } from './modelTransport.js';
 import { readRules, rulesForPrompt } from './rules.js';
+import { loadThread, saveThread } from './threadStore.js';
 import type { UsageMeter } from './usage.js';
 
 /**
@@ -26,6 +32,7 @@ const MAX_THREADS = 32;
 const stores = new Map<string, CheckpointStore>();
 
 const checkpointDir = (ctx: vscode.ExtensionContext) => join(ctx.globalStorageUri.fsPath, 'checkpoints');
+const threadsDir = (ctx: vscode.ExtensionContext, root: string) => join(ctx.globalStorageUri.fsPath, 'threads', createHash('sha1').update(root).digest('hex').slice(0, 12));
 const storeFor = (ctx: vscode.ExtensionContext, root: string): CheckpointStore => {
 	let s = stores.get(root);
 	if (!s) { s = new CheckpointStore(join(checkpointDir(ctx), createHash('sha1').update(root).digest('hex').slice(0, 12)), root); stores.set(root, s); }
@@ -51,6 +58,13 @@ function threadIdFromHistory(history: ReadonlyArray<unknown>): string | undefine
 	return undefined;
 }
 
+function readNotes(root: string): { name: string; text: string }[] {
+	try {
+		const dir = join(root, '.riaf', 'notes');
+		return readdirSync(dir).filter(name => name.endsWith('.md')).map(name => ({ name, text: readFileSync(join(dir, name), 'utf8') }));
+	} catch { return []; }
+}
+
 export function registerChatParticipant(ctx: vscode.ExtensionContext, indexes: IndexManager, usage: UsageMeter): void {
 	const handler: vscode.ChatRequestHandler = async (request, chatCtx, stream, token) => {
 		const settings = readSettings();
@@ -58,6 +72,47 @@ export function registerChatParticipant(ctx: vscode.ExtensionContext, indexes: I
 		if (!folder) { stream.markdown('Open a folder first — RIAF indexes a workspace.'); return {}; }
 
 		const mode: AgentMode = (['plan', 'explain', 'verify'] as const).find(c => c === request.command) ?? 'agent';
+		if (request.command === 'run' || request.command === 'status' || request.command === 'resume') {
+			const transport = await createTransport(request.model);
+			if (!transport) { stream.markdown('No language model available.'); return {}; }
+			const planTransport = settings.models.plan ? await createTransport(request.model, settings.models.plan) ?? transport : transport;
+			const criticTransport = settings.models.critic ? await createTransport(request.model, settings.models.critic) ?? planTransport : planTransport;
+			const root = folder.uri.fsPath;
+			const result = await handleEngineCommand({
+				command: request.command, repo: root, goal: request.prompt,
+				markdown: s => stream.markdown(s), progress: s => stream.progress(s),
+				callLLM: async (system, user) => {
+					const chosen = system.startsWith('You review') ? criticTransport : planTransport;
+					const r = await chosen.call({ systemMessage: system, messages: [{ role: 'user', text: user }] });
+					return { text: r.text, inputTokens: r.usage?.inputTokens, outputTokens: r.usage?.outputTokens };
+				},
+				env: {
+					readFile: async path => { try { return readFileSync(join(root, path), 'utf8'); } catch { return null; } },
+					diagnostics: async path => {
+						const uri = vscode.Uri.joinPath(folder.uri, path);
+						return vscode.languages.getDiagnostics(uri).map(d => ({ message: d.message, severity: d.severity === vscode.DiagnosticSeverity.Error ? 'error' : 'warn' }));
+					},
+				},
+				runSubtask: async (_subtask, context) => {
+					const index = await indexes.get(folder);
+					const quiet = { ...settings, agent: { ...settings.agent, generatePlan: false, autoVerify: false } };
+					const ran = await runAgent({ transport, index, folder, settings: quiet, usage, mode: 'agent', userPrompt: context, history: [], stream, token, log: m => indexes.log(m), memoryHome: homedir() });
+					return { ok: ran.stopped === 'done', digest: ran.editedFiles.map(f => `edit ${f}`), notes: ran.stopped, spend: undefined };
+				},
+			});
+			return { metadata: { engine: result } };
+		}
+		if (request.command === 'analyse') {
+			const index = await indexes.get(folder);
+			const report = await index.getIndexingReport();
+			const summaryTransport = settings.models.summary ? await createTransport(request.model, settings.models.summary) ?? undefined : undefined;
+			const text = await buildContextMarkdown({ name: folder.name, report, transport: summaryTransport });
+			const path = join(folder.uri.fsPath, `${folder.name}_context.md`);
+			const { writeFileSync } = await import('node:fs');
+			writeFileSync(path, text);
+			stream.markdown(`Wrote **${folder.name}_context.md** (${text.length} characters).`);
+			return {};
+		}
 		if (request.command === 'reindex') {
 			stream.progress('Reindexing…');
 			const stats = await indexes.reindex(folder, true);
@@ -80,7 +135,8 @@ export function registerChatParticipant(ctx: vscode.ExtensionContext, indexes: I
 
 		// history: VS Code hands us prior turns; we keep our richer tool history keyed on the thread.
 		const threadId = threadIdFromHistory(chatCtx.history) ?? generateUuid();
-		const thread = threads.get(threadId) ?? { history: [], turnStarts: [], root: folder.uri.fsPath };
+		const tdir = threadsDir(ctx, folder.uri.fsPath);
+		const thread = threads.get(threadId) ?? loadThread(tdir, threadId) ?? { history: [], turnStarts: [], root: folder.uri.fsPath };
 		const history = thread.history;
 		// checkpoint for this turn: the first write to each file snapshots its original (RIAF: Rewind)
 		thread.turnStarts.push([...history]);
@@ -99,14 +155,17 @@ export function registerChatParticipant(ctx: vscode.ExtensionContext, indexes: I
 			if (v instanceof vscode.Location) { return `Attached range: ${relative(folder.uri.fsPath, v.uri.fsPath)}:${v.range.start.line + 1}-${v.range.end.line + 1}`; }
 			return typeof v === 'string' ? v : '';
 		}).filter(Boolean);
-		const prompt = [request.prompt, ...refs].join('\n');
+		const notes = formatNotes(selectNotes(request.prompt, readNotes(folder.uri.fsPath)));
+		const prompt = [request.prompt, ...refs, notes].filter(Boolean).join('\n');
 
 		const rules = rulesForPrompt(await readRules(folder));
 		const result = await runAgent({
 			transport, index, folder, settings, usage, mode, userPrompt: prompt, history, activeFile, rules, stream, token, log: m => indexes.log(m), checkpoint,
+			memoryHome: homedir(),
 		});
 		thread.history = result.history;
 		threads.delete(threadId); threads.set(threadId, thread);                 // re-insert → most recent last
+		saveThread(tdir, threadId, thread);
 		if (threads.size > MAX_THREADS) { threads.delete(threads.keys().next().value!); }
 		if (checkpoint && Object.keys(checkpoint.current.files).length) {
 			stream.markdown(`\n\n_Checkpoint saved for ${Object.keys(checkpoint.current.files).length} file(s) — **RIAF: Rewind** restores them._`);
@@ -140,6 +199,8 @@ export function registerChatParticipant(ctx: vscode.ExtensionContext, indexes: I
 			for (const rel of [...r.files.restored]) { const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === join(folder.uri.fsPath, rel)); if (doc?.isDirty) { indexes.log(`rewind: ${rel} had unsaved edits in the editor; disk was restored`); } }
 		}
 		if (what.what !== 'files') { parts.push('conversation rolled back (VS Code still shows the old turns; the agent no longer remembers them)'); }
+		const rewound = threads.get(pick.cp.threadId);
+		if (rewound) { saveThread(threadsDir(ctx, folder.uri.fsPath), pick.cp.threadId, rewound); }
 		indexes.log(`rewind thread ${pick.cp.threadId} to turn ${pick.cp.turn} (${what.what}): ${parts.join('; ')}`);
 		void vscode.window.showInformationMessage(`RIAF rewind → turn ${pick.cp.turn}: ${parts.join('; ')}`);
 	}));

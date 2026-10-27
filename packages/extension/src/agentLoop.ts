@@ -3,16 +3,22 @@ import type { RiafIndex } from '@bosch-mps/riaf-core';
 import {
 	buildAgentTailHints, buildCrossQueryFileReadHint, buildEditCompletionHint, buildExplorationBudgetHint,
 	buildLargeFileEditHint, buildRepeatEditHint, buildRepeatFileReadHint, buildRepeatReadHint,
-	createEditCompletionTracker, createReadOnlyCallCounts, estimateChatHistoryTokens, estimateTokens,
-	generateAgentPlan, getLLMRetryDelayMs, getMaxLLMRetryAttempts, invalidateFileRead, isCompactableToolName,
-	markPlanItemDoneForTool, markTruncatedEditTool, needsEditCompletion, prepareMessagesForModel,
-	recordFileReadSize, shouldForceAggressiveTrimOnRetry, shouldSkipDuplicateFileRead, summarizeThreadMiddle, trackFileEdit, trackFileRead, trackReadOnlyCall,
+	buildSandboxVerificationHint, createEditCompletionTracker, createReadOnlyCallCounts, createSandboxVerificationTracker,
+	discoverAdditionalReadTools, estimateChatHistoryTokens, estimateTokens,
+	formatRateLimitCooldownMessage, getAgentInputTokenCap, getAgentLoopLimits, getLatestPlanMessage, getLLMRetryDelayMs, getLlmStreamStallTimeoutMs, getMaxLLMRetryAttempts, getProviderRateLimitCooldownMs,
+	hasKnownPricing, invalidateFileRead, isCompactableToolName, isLikelyOutputTruncated, isRateLimitLLMError, isReadOnlyBatchTool, isStreamStallLLMError,
+	markInterruptedEditTool, markPlanItemDoneForTool, markSandboxCodeChange, markTruncatedEditTool, needsEditCompletion, needsSandboxVerification, PRICING_TABLE_DATE, prepareMessagesForModel,
+	recordFileReadSize, recordProviderRateLimitHit, resolveAgentPlanForRun, shouldForceAggressiveTrimOnRetry, shouldGenerateAgentPlan, shouldSkipDuplicateFileRead, shouldUseParallelReadBatching, skipRemainingPlanItems, summarizeThreadMiddle, trackFileEdit, trackFileRead, trackReadOnlyCall,
 	URI, generateUuid,
-	type ChatMessage, type FileReadRecord, type LLMCallPort, type LLMErrorLike, type PlanMessage, type RawToolParamsObj,
+	type ChatMessage, type FileReadRecord, type LLMCallPort, type LLMErrorLike, type PlanMessage, type RawToolParamsObj, type WorkspaceProfile,
 } from '@bosch-mps/token-opt';
+import { profileCharCap, toGlobalSettings } from './agentLimits.js';
+import { appendMemory, extractRememberedFact, memoryPromptBlock, readMemory } from './memory.js';
 import type { RiafSettings } from './config.js';
 import type { ModelTransport, ToolCall, TransportMessage } from './modelTransport.js';
 import { COMMAND_TOOLS, EDIT_TOOLS, READ_ONLY_TOOLS, TOOL_SPECS, executeTool, type ToolContext } from './tools/toolRegistry.js';
+import { listAgentMcpTools } from './mcpClient.js';
+import { createTransport } from './modelTransport.js';
 import { loadHooks } from './tools/hooks.js';
 import { loadProjectRules } from './projectRules.js';
 import type { Checkpoint, CheckpointStore } from './checkpoints.js';
@@ -41,8 +47,14 @@ export interface AgentRunOptions {
 	retryDelayMs?: number;
 	/** Pre-edit snapshots for this turn (RIAF: Rewind). */
 	checkpoint?: { store: CheckpointStore; current: Checkpoint };
-	/** How long to wait for language-server diagnostics after an edit (default 1200 ms; tests pass 0). */
+	/** How long to wait for language-server diagnostics after an edit (overrides the setting; tests pass 0). */
 	diagnosticsSettleMs?: number;
+	/** Override the stall watchdog (tests). Production uses the clamped setting. */
+	stallTimeoutMs?: number;
+	/** Directory whose `.riaf/memory.md` is read and, for "remember that", written. Absent in tests. */
+	memoryHome?: string;
+	/** Explicit memory text. When omitted and memoryHome is set, the file is read. */
+	memoryText?: string;
 }
 
 /** How many times an empty / cut-off model response is nudged before the run ends visibly. */
@@ -53,7 +65,7 @@ export interface AgentRunResult {
 	history: ChatMessage[];
 	iterations: number;
 	editedFiles: string[];
-	stopped: 'done' | 'max_iterations' | 'cancelled' | 'error' | 'tool_fail_cap';
+	stopped: 'done' | 'max_iterations' | 'cancelled' | 'error' | 'tool_fail_cap' | 'budget';
 }
 
 /* ───────────────────────────── ChatMessage constructors (token-opt shapes) ───────────────────────────── */
@@ -107,7 +119,16 @@ Tool policy (token discipline):
 - For open-ended investigation, delegate to the explore tool and work from its report instead of reading many files yourself.
 - After editing, run run_tests (or the relevant typecheck/lint) once and fix failures; do not loop on the same failing command.
 - Stop when the task is done; summarise what changed in 3-6 lines. Do not restate file contents.
-- Paths are workspace-relative. Never invent file paths — find them first.`;
+- Paths are workspace-relative. Never invent file paths — find them first.
+
+File reading:
+- Prefer get_symbol, get_file_outline, grep and search_codebase before read_file.
+- Never read a file you have already read this turn unless an edit invalidated it.
+- Do not use shell heredocs. Do not cat a whole file to answer a question the index can answer.
+
+Terminals and MCP:
+- A dev server (npm run dev, vite, next, flask, uvicorn) is routed to a persistent terminal named dev. Read the reason it returns: server ready, port in use, still starting, or exit N.
+- Tools from .mcp.json and the user mcp.json are named mcp_<server>_<tool>. list_mcp_tools shows servers that are configured or disabled.`;
 
 const MODE_SYSTEM: Record<AgentMode, string> = {
 	agent: '',
@@ -128,20 +149,42 @@ const toolsForMode = (mode: AgentMode, s: RiafSettings) => TOOL_SPECS.filter(t =
 
 export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 	const { transport, settings: s, stream, token, usage } = o;
+	const limits = getAgentLoopLimits(toGlobalSettings(s));
+	const gs = toGlobalSettings(s);
 	const history: ChatMessage[] = [...o.history, userMsg(o.userPrompt)];
 	const abort = new AbortController();
 	token.onCancellationRequested(() => abort.abort());
+
+	const remembered = o.memoryHome ? extractRememberedFact(o.userPrompt) : null;
+	if (remembered && o.memoryHome) {
+		appendMemory(remembered, o.memoryHome);
+		const ack = `I'll remember that: ${remembered}`;
+		history.push(assistantMsg(ack));
+		stream.markdown(ack);
+		return { history, iterations: 0, editedFiles: [], stopped: 'done' };
+	}
+	if (s.agent.sessionBudgetUsd > 0 && usage.session.costUSD >= s.agent.sessionBudgetUsd) {
+		stream.markdown(`\n\n⚠️ session budget reached ($${usage.session.costUSD.toFixed(4)} of $${s.agent.sessionBudgetUsd}). Raise \`riaf.agent.sessionBudgetUsd\` or set it to 0 to continue.`);
+		return { history, iterations: 0, editedFiles: [], stopped: 'budget' };
+	}
+	const cooldownMs = getProviderRateLimitCooldownMs(transport.providerName, transport.modelName);
+	if (cooldownMs > 0) {
+		const wait = o.retryDelayMs !== undefined ? Math.min(cooldownMs, o.retryDelayMs) : cooldownMs;
+		stream.progress(formatRateLimitCooldownMessage(wait));
+		await sleep(wait, abort.signal);
+	}
 
 	// trackers from token-opt
 	const fileReads = new Map<string, FileReadRecord>();
 	const fileEditCounts = new Map<string, number>();
 	const readCounts = createReadOnlyCallCounts();
 	const editCompletion = createEditCompletionTracker();
+	const sandboxVerify = createSandboxVerificationTracker();
 	seedFileReadsFromHistory(o.history, fileReads);
 
-	const meter = (u: Parameters<UsageMeter['record']>[0] | undefined, purpose: string) => u && usage.record(u, { provider: transport.providerName, model: transport.modelName, purpose });
+	const meter = (u: Parameters<UsageMeter['record']>[0] | undefined, purpose: string) => { if (!s.general.metricsOptOut && u) { usage.record(u, { provider: transport.providerName, model: transport.modelName, purpose }); } };
 	const toolCtx: ToolContext = {
-		folder: o.folder, index: o.index, requireEditApproval: s.agent.requireEditApproval, allowRunCommand: s.agent.allowRunCommand,
+		folder: o.folder, index: o.index, activeFile: o.activeFile, requireEditApproval: s.agent.requireEditApproval, allowRunCommand: s.agent.allowRunCommand,
 		// plan / explain hide the edit tools from the model AND refuse them if a call arrives anyway
 		readOnly: o.mode === 'plan' || o.mode === 'explain',
 		progress: t => stream.progress(t), token,
@@ -150,37 +193,57 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 		sandbox: s.agent.sandbox,
 		hooks: loadHooks(o.folder.uri.fsPath, s.agent.hooks),
 		checkpoint: s.agent.checkpoints ? o.checkpoint : undefined,
-		diagnosticsSettleMs: s.agent.diagnosticsAfterEdit ? (o.diagnosticsSettleMs ?? 1_200) : undefined,
+		diagnosticsSettleMs: s.agent.diagnosticsAfterEdit ? (o.diagnosticsSettleMs ?? s.agent.diagnosticsSettleMs) : undefined,
+		exploreMaxSteps: s.agent.exploreMaxSteps,
 		transport, onSubagentUsage: (u, purpose) => meter(u, purpose), log: o.log,
 	};
 	const tools = toolsForMode(o.mode, s);
+	if (o.mode === 'agent' || o.mode === 'verify') {
+		const mcp = await listAgentMcpTools(o.folder.uri.fsPath, s.mcp.disabledServers).catch(error => { o.log(`mcp tools: ${(error as Error).message}`); return []; });
+		tools.push(...mcp);
+	}
 
 	// stable system prompt: role + policy + project rules + workspace profile (cacheable prefix)
 	const profile = await o.index.getContextualProfile(o.activeFile).catch(() => undefined);
 	const fileRules = loadProjectRules(o.folder.uri.fsPath, o.activeFile);
 	if (fileRules.sources.length) { o.log(`project rules: ${fileRules.sources.join(', ')}`); }
-	const stableSystem = [STABLE_SYSTEM, MODE_SYSTEM[o.mode],
+	const memoryText = o.memoryText ?? (o.memoryHome ? readMemory(o.memoryHome) : '');
+	const profileCap = profileCharCap(o.mode, gs.enableLightAgent);
+	const profileText = profile?.profileText && profile.profileText.length > profileCap ? `${profile.profileText.slice(0, profileCap)}\n…` : profile?.profileText;
+	const stableSystem = [s.general.disableSystemPrompt ? '' : STABLE_SYSTEM, MODE_SYSTEM[o.mode],
+		s.general.aiInstructions ? `<ai_instructions>\n${s.general.aiInstructions}\n</ai_instructions>` : '',
 		o.rules ?? '',
+		memoryPromptBlock(memoryText),
 		fileRules.text ? `<project_rules>\nFollow these project rules (${fileRules.sources.join(', ')}); they override the defaults above where they conflict.\n\n${fileRules.text}\n</project_rules>` : '',
-		profile?.profileText ? `<workspace_profile>\n${profile.profileText}\n</workspace_profile>` : '',
+		profileText ? `<workspace_profile>\n${profileText}\n</workspace_profile>` : '',
 		profile?.activeFile ? `Active file: ${profile.activeFile}\nRelated: ${profile.relatedFiles.slice(0, 12).join(', ')}\nTests: ${profile.tests.join(', ') || 'none'}` : '',
 		profile?.neighborhood ? `<active_file_neighborhood>\n${profile.neighborhood}\n</active_file_neighborhood>` : ''].filter(Boolean).join('\n\n');
 	// files whose one-hop neighbourhood has already been shown this run (the preamble before an edit)
 	const briefedFiles = new Set<string>(profile?.activeFile && profile.neighborhood ? [profile.activeFile] : []);
 
-	// 1. plan
+	// 1. plan — reuse a pending plan, reactivate a skipped one on "continue", else generate with session context.
+	// Leftover items are never marked done just because the run ended.
 	let plan: PlanMessage | null = null;
-	if (s.agent.generatePlan && o.mode === 'agent') {
+	if (shouldGenerateAgentPlan(gs) && o.mode === 'agent') {
 		stream.progress('Planning…');
 		const callLLM: LLMCallPort = async req => {
 			const r = await transport.call({ systemMessage: req.systemMessage, messages: toTransportMessages(req.messages), maxOutputTokens: req.maxOutputTokens, signal: req.signal });
+			meter(r.usage, 'agent:plan');
 			return { text: r.text, usage: r.usage };
 		};
-		plan = await generateAgentPlan({
+		const resolved = await resolveAgentPlanForRun({
 			callLLM, usageMeter: usage, chatMessages: history, chatMode: 'agent', threadId: generateUuid(),
 			modelSelection: { providerName: transport.providerName, modelName: transport.modelName }, signal: abort.signal, timeoutMs: 30_000,
-		}).catch(e => { o.log(`plan failed: ${e}`); return null; });
-		if (plan) { history.push(plan); renderPlan(stream, plan); }
+			fileReadHistory: fileReads,
+		}).catch(e => { o.log(`plan failed: ${e}`); return { action: 'none' as const }; });
+		if (resolved.action === 'reuse') { plan = getLatestPlanMessage(history); }
+		else if (resolved.action === 'reactivate') { history[resolved.planMessageIdx] = resolved.plan; plan = resolved.plan; renderPlan(stream, plan); }
+		else if (resolved.action === 'generate') {
+			if (resolved.priorPlanMessageIdx !== undefined && history[resolved.priorPlanMessageIdx]?.role === 'plan') {
+				history[resolved.priorPlanMessageIdx] = skipRemainingPlanItems(history[resolved.priorPlanMessageIdx] as PlanMessage);
+			}
+			plan = resolved.plan; history.push(plan); renderPlan(stream, plan);
+		}
 	}
 
 	// 2. iterate
@@ -195,18 +258,20 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 	let aggressiveTrim = false;
 	let summaryFailedThisRun = false;
 
-	while (iterations < s.agent.maxIterations) {
+	while (iterations < limits.maxAgentIterations) {
 		if (token.isCancellationRequested) { stopped = 'cancelled'; break; }
 		iterations++;
 
 		// budget: summarise the middle of a long thread (model side-call), then compact stale tool
 		// results, trim oldest, keep the protected tail — the summary step is skipped on failure so
 		// trimming always still runs.
-		const before = estimateChatHistoryTokens({ chatMessages: history, systemMessage: stableSystem, aiInstructions: '' });
-		const effectiveWindow = Math.floor(transport.contextWindow * (s.agent.contextWindowRatio / 0.85));
+		const inputCap = getAgentInputTokenCap(transport.providerName);
+		let effectiveWindow = Math.floor(transport.contextWindow * (s.agent.contextWindowRatio / 0.85));
+		if (inputCap) { effectiveWindow = Math.min(effectiveWindow, inputCap); }
 		if (s.agent.summarizeHistory && !summaryFailedThisRun) {
+			const summaryTransport = s.models.summary ? await createTransport(undefined, s.models.summary) ?? transport : transport;
 			const callLLM: LLMCallPort = async req => {
-				const r = await transport.call({ systemMessage: req.systemMessage, messages: toTransportMessages(req.messages), maxOutputTokens: req.maxOutputTokens, signal: req.signal });
+				const r = await summaryTransport.call({ systemMessage: req.systemMessage, messages: toTransportMessages(req.messages), maxOutputTokens: req.maxOutputTokens, signal: req.signal });
 				meter(r.usage, 'agent:summary');
 				return { text: r.text, usage: r.usage };
 			};
@@ -225,10 +290,9 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 		const prepared = prepareMessagesForModel({
 			messages: history, contextWindow: effectiveWindow,
 			reservedOutputTokens: transport.maxOutputTokens, chatMode: 'agent', fileReads, systemMessage: stableSystem, providerName: transport.providerName,
-			forceAggressiveTrim: aggressiveTrim,
+			forceAggressiveTrim: aggressiveTrim || iterations >= 3,
 		});
 		usage.recordSaved(Math.max(0, estimateChatHistoryTokens({ chatMessages: history, systemMessage: stableSystem, aiInstructions: '' }) - prepared.estimatedTokens));
-		void before;
 		if (prepared.trimmed || prepared.compacted) { o.log(`budget: trimmed=${prepared.trimmed} compacted=${prepared.compacted} est=${prepared.estimatedTokens}`); }
 
 		// volatile hints (never in the cached prefix)
@@ -237,22 +301,32 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 			repeatReadHint: buildRepeatReadHint(readCounts),
 			repeatFileReadHint: buildRepeatFileReadHint(fileReads),
 			largeFileEditHint: buildLargeFileEditHint(fileReads),
-			explorationBudgetHint: buildExplorationBudgetHint(readCounts, s.agent.maxReadOnlyCalls),
+			explorationBudgetHint: buildExplorationBudgetHint(readCounts, limits.maxReadOnlyCalls),
 			editCompletionHint: editCompletion.interruptedEditTool || editCompletion.truncatedEditTool ? buildEditCompletionHint(editCompletion) : '',
 			crossQueryFileReadHint: buildCrossQueryFileReadHint(fileReads, iterations),
 		});
 		const planText = plan ? `\n\nPlan status:\n${plan.items.map(i => `- [${i.status === 'done' ? 'x' : ' '}] ${i.text}`).join('\n')}` : '';
 
 		let res;
+		let streamed = '';
+		const stallMs = o.stallTimeoutMs ?? getLlmStreamStallTimeoutMs(limits.llmStreamStallTimeoutMs, { editToolStreaming: fileEditCounts.size > 0 });
 		try {
-			res = await transport.call({
+			res = await callWithStall(transport, {
 				systemMessage: stableSystem, volatileSystemMessage: (volatile + planText).trim() || undefined,
 				messages: toTransportMessages(prepared.messages), tools, signal: abort.signal,
-				onText: delta => stream.markdown(delta),
-			});
+				onText: delta => { streamed += delta; stream.markdown(delta); },
+			}, stallMs);
 		} catch (e) {
-			if (token.isCancellationRequested) { stopped = 'cancelled'; break; }
+			if (token.isCancellationRequested) {
+				if (streamed) { history.push(assistantMsg(streamed)); }
+				stopped = 'cancelled'; break;
+			}
 			const err: LLMErrorLike = { message: (e as Error).message ?? String(e), fullError: e instanceof Error ? e : null };
+			if (isRateLimitLLMError(err)) { recordProviderRateLimitHit(transport.providerName, err, transport.modelName); }
+			if (isStreamStallLLMError(err) && fileEditCounts.size > 0) {
+				markInterruptedEditTool(editCompletion);
+				history.push(userMsg('The model stream stalled while an edit was in progress. Retry the edit with smaller edit_file blocks; do not rewrite the whole file.'));
+			}
 			o.log(`model error (attempt ${retryAttempt + 1}): ${(e as Error).stack ?? e}`);
 			// transient (429 / 5xx / overflow / stall): wait and retry with a tighter budget; fatal (4xx auth, 404): stop
 			if (retryAttempt < getMaxLLMRetryAttempts(err)) {
@@ -273,7 +347,13 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 		// Always record the assistant turn when it carries tool calls — even with empty text — so the
 		// tool results that follow stay paired with it (sanitizeToolMessagePairing drops orphans).
 		if (res.text || res.toolCalls.length) { history.push(assistantMsg(res.text)); }
-		if (res.stopReason === 'length' && res.toolCalls.some(tc => EDIT_TOOLS.has(tc.name))) { markTruncatedEditTool(editCompletion); }
+		const truncated = res.stopReason === 'length' || isLikelyOutputTruncated(res.usage?.outputTokens, res.usage ? transport.maxOutputTokens : 0);
+		if (truncated && (res.toolCalls.some(tc => EDIT_TOOLS.has(tc.name)) || !res.toolCalls.length)) { markTruncatedEditTool(editCompletion); }
+		if (truncated && !res.toolCalls.length && res.text.trim() && emptyNudges < MAX_EMPTY_RESPONSE_NUDGES) {
+			emptyNudges++;
+			history.push(userMsg('Your previous message was cut off by the output limit (token count is at the cap). Continue exactly where you stopped; if you were about to edit, call edit_file with small blocks.'));
+			continue;
+		}
 
 		if (!res.toolCalls.length) {
 			// empty or cut-off response: ask to continue, a bounded number of times, instead of ending silently
@@ -296,6 +376,12 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 				continue;
 			}
 			// auto-verify once after edits
+			if (o.mode === 'agent' && !s.agent.autoVerify && s.agent.sandboxVerificationNudge && !verified && needsSandboxVerification(sandboxVerify, fileEditCounts, await workspaceProfile(o))) {
+				verified = true;
+				sandboxVerify.nudgeCount++;
+				history.push(userMsg(buildSandboxVerificationHint(await workspaceProfile(o)).trim()));
+				continue;
+			}
 			if (o.mode === 'agent' && s.agent.autoVerify && editedFiles.size && !verified) {
 				verified = true;
 				stream.progress('Verifying…');
@@ -309,9 +395,36 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 			break;
 		}
 
-		// 3. execute tool calls
-		for (const call of res.toolCalls) {
-			if (token.isCancellationRequested) { break; }
+		// 3. execute tool calls. A single read-only call may grow into a small parallel batch.
+		let calls = res.toolCalls;
+		if (shouldUseParallelReadBatching(gs) && calls.length === 1 && isReadOnlyBatchTool(calls[0].name)) {
+			try {
+				const primary = calls[0];
+				const extra = await discoverAdditionalReadTools({
+					callLLM: async req => {
+						const r = await transport.call({ systemMessage: req.systemMessage, messages: toTransportMessages(req.messages), maxOutputTokens: req.maxOutputTokens, signal: abort.signal });
+						meter(r.usage, 'agent:read-batch');
+						return { text: r.text };
+					},
+					modelSelection: { providerName: transport.providerName, modelName: transport.modelName },
+					primaryToolCall: { name: primary.name, rawParams: stringifyParams(primary.args ?? {}), id: primary.id, isDone: true, doneParams: Object.keys(primary.args ?? {}) },
+					recentMessages: history.filter(m => m.role === 'user').map(m => ({ role: 'user', content: (m as { content?: string }).content ?? '' })),
+					excludeKeys: new Set(),
+					signal: abort.signal,
+				});
+				for (const t of extra) {
+					const args: Record<string, unknown> = {};
+					for (const [k, v] of Object.entries(t.rawParams)) { args[k] = v; }
+					calls = [...calls, { id: t.id, name: t.name, args }];
+				}
+			} catch (e) { o.log(`read batch skipped: ${(e as Error).message}`); }
+		}
+		for (const call of calls) {
+			if (token.isCancellationRequested) {
+				history.push({ role: 'interrupted_streaming_tool', name: call.name } as ChatMessage);
+				stopped = 'cancelled';
+				break;
+			}
 			const args = call.args ?? {};
 			// read dedup (token-opt)
 			if (call.name === 'read_file' && typeof args.filePath === 'string') {
@@ -345,6 +458,7 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 					trackFileEdit(fileEditCounts, call.name, { uri: URI.file(p) });
 					editedFiles.add(p);
 					verified = false;
+					markSandboxCodeChange(sandboxVerify);
 					// the file changed: an earlier read no longer reflects it, so a re-read must be allowed
 					invalidateFileRead(fileReads, URI.file(p));
 					stream.reference(vscode.Uri.joinPath(o.folder.uri, p));
@@ -359,22 +473,43 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 					if (p && out.meta?.editFailed) { invalidateFileRead(fileReads, URI.file(p)); }
 					if (out.meta?.truncated) { markTruncatedEditTool(editCompletion); }
 				}
-				if (consecutiveFails >= 3) { stream.markdown('\n\n⚠️ three consecutive tool failures — stopping.'); stopped = 'tool_fail_cap'; break; }
+				if (consecutiveFails >= limits.maxConsecutiveToolFails) { stream.markdown(`\n\n⚠️ ${limits.maxConsecutiveToolFails} consecutive tool failures — stopping.`); stopped = 'tool_fail_cap'; break; }
 			}
 		}
 		if (stopped !== 'done') { break; }
 	}
-	if (iterations >= s.agent.maxIterations && stopped === 'done') { stopped = 'max_iterations'; stream.markdown(`\n\n⚠️ reached the iteration cap (${s.agent.maxIterations}).`); }
+	if (iterations >= limits.maxAgentIterations && stopped === 'done') { stopped = 'max_iterations'; stream.markdown(`\n\n⚠️ reached the iteration cap (${limits.maxAgentIterations}).`); }
 	if (plan) { renderPlan(stream, plan, true); }
 
 	const t = usage.session;
-	stream.markdown(`\n\n<sub>${iterations} iteration${iterations === 1 ? '' : 's'} · ${t.inputTokens.toLocaleString()} in / ${t.outputTokens.toLocaleString()} out · ${t.savedTokens.toLocaleString()} tokens saved by RIAF this session</sub>`);
+	const priceNote = hasKnownPricing(transport.providerName) ? '' : ` · no price for ${transport.providerName} (table ${PRICING_TABLE_DATE})`;
+	stream.markdown(`\n\n<sub>${iterations} iteration${iterations === 1 ? '' : 's'} · ${t.inputTokens.toLocaleString()} in / ${t.outputTokens.toLocaleString()} out · ${t.savedTokens.toLocaleString()} tokens saved by RIAF this session${priceNote}</sub>`);
 	return { history, iterations, editedFiles: [...editedFiles], stopped };
 }
 
 /* ───────────────────────────── helpers ───────────────────────────── */
 
 const numOrNull = (v: unknown): number | null => (v === undefined || v === null || v === '') ? null : Number(v);
+async function workspaceProfile(o: AgentRunOptions): Promise<WorkspaceProfile | null> {
+	const p = await o.index.getWorkspaceProfile().catch(() => undefined);
+	return (p as WorkspaceProfile | undefined) ?? null;
+}
+
+/** Abort the model call if it produces nothing for `timeoutMs`. A stall does not cancel the whole run. */
+function callWithStall(transport: ModelTransport, req: Parameters<ModelTransport['call']>[0], timeoutMs: number): Promise<Awaited<ReturnType<ModelTransport['call']>>> {
+	const stall = new AbortController();
+	let timer: ReturnType<typeof setTimeout>;
+	const onAbort = () => { clearTimeout(timer); stall.abort(); };
+	req.signal?.addEventListener('abort', onAbort, { once: true });
+	return new Promise((resolve, reject) => {
+		timer = setTimeout(() => { stall.abort(); reject(new Error('stream stalled')); }, timeoutMs);
+		transport.call({ ...req, signal: stall.signal }).then(
+			r => { clearTimeout(timer); resolve(r); },
+			e => { clearTimeout(timer); reject(stall.signal.aborted && !req.signal?.aborted ? new Error('stream stalled') : e); },
+		);
+	});
+}
+
 const sleep = (ms: number, signal: AbortSignal) => new Promise<void>(resolve => {
 	const t = setTimeout(resolve, ms);
 	signal.addEventListener('abort', () => { clearTimeout(t); resolve(); }, { once: true });

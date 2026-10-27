@@ -55,6 +55,22 @@
           {
             "name": "reindex",
             "description": "Rebuild the repository index"
+          },
+          {
+            "name": "run",
+            "description": "Plan the task into a ledger, then execute and verify each subtask"
+          },
+          {
+            "name": "status",
+            "description": "Show the latest RIAF run ledger"
+          },
+          {
+            "name": "resume",
+            "description": "Continue the latest unfinished run"
+          },
+          {
+            "name": "analyse",
+            "description": "Write <folder>_context.md from the index"
           }
         ]
       }
@@ -129,6 +145,524 @@
             "query"
           ]
         }
+      },
+      {
+        "name": "riaf_read_file",
+        "displayName": "Read file (RIAF)",
+        "toolReferenceName": "riafRead",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Read a workspace file, optionally a line range. Do not re-read a file already in context.",
+        "modelDescription": "Read a workspace file, optionally a line range. Do not re-read a file already in context.",
+        "icon": "$(file)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path"
+            },
+            "startLine": {
+              "type": "number",
+              "description": "1-based, optional"
+            },
+            "endLine": {
+              "type": "number",
+              "description": "inclusive, optional"
+            }
+          },
+          "required": [
+            "filePath"
+          ]
+        }
+      },
+      {
+        "name": "riaf_get_file_outline",
+        "displayName": "File outline (RIAF)",
+        "toolReferenceName": "riafOutline",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Symbols defined in a file with line numbers — cheaper than reading the whole file.",
+        "modelDescription": "Symbols defined in a file with line numbers — cheaper than reading the whole file.",
+        "icon": "$(list-tree)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path"
+            }
+          },
+          "required": [
+            "filePath"
+          ]
+        }
+      },
+      {
+        "name": "riaf_search_in_file",
+        "displayName": "Search in file (RIAF)",
+        "toolReferenceName": "riafSearchInFile",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Regex search within one file; returns matching lines with numbers.",
+        "modelDescription": "Regex search within one file; returns matching lines with numbers.",
+        "icon": "$(search)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path"
+            },
+            "pattern": {
+              "type": "string",
+              "description": "JavaScript regex"
+            }
+          },
+          "required": [
+            "filePath",
+            "pattern"
+          ]
+        }
+      },
+      {
+        "name": "riaf_ls_dir",
+        "displayName": "List directory (RIAF)",
+        "toolReferenceName": "riafLs",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "List a directory (non-recursive).",
+        "modelDescription": "List a directory (non-recursive).",
+        "icon": "$(folder)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "dirPath": {
+              "type": "string",
+              "description": "Workspace-relative path, empty for root"
+            }
+          }
+        }
+      },
+      {
+        "name": "riaf_get_import_graph",
+        "displayName": "Import graph (RIAF)",
+        "toolReferenceName": "riafImports",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Files imported by and importing a file.",
+        "modelDescription": "Files imported by and importing a file.",
+        "icon": "$(references)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path"
+            }
+          },
+          "required": [
+            "filePath"
+          ]
+        }
+      },
+      {
+        "name": "riaf_get_tests_for_file",
+        "displayName": "Tests for file (RIAF)",
+        "toolReferenceName": "riafTests",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Test files that cover a source file.",
+        "modelDescription": "Test files that cover a source file.",
+        "icon": "$(beaker)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path"
+            }
+          },
+          "required": [
+            "filePath"
+          ]
+        }
+      },
+      {
+        "name": "riaf_grep",
+        "displayName": "Grep (RIAF)",
+        "toolReferenceName": "riafGrep",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Exact-text or regex search across the workspace. Use for identifiers, error strings and call sites.",
+        "modelDescription": "Exact-text or regex search across the workspace. Use for identifiers, error strings and call sites.",
+        "icon": "$(search)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "Text to find"
+            },
+            "include": {
+              "type": "string",
+              "description": "Glob, optional"
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      },
+      {
+        "name": "riaf_glob",
+        "displayName": "Glob (RIAF)",
+        "toolReferenceName": "riafGlob",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "List files matching a glob. Respects .gitignore.",
+        "modelDescription": "List files matching a glob. Respects .gitignore.",
+        "icon": "$(files)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "description": "Glob pattern"
+            }
+          },
+          "required": [
+            "pattern"
+          ]
+        }
+      },
+      {
+        "name": "riaf_find_references",
+        "displayName": "Find references (RIAF)",
+        "toolReferenceName": "riafRefs",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Callers, subclasses and importers of a symbol. Call before changing a signature.",
+        "modelDescription": "Callers, subclasses and importers of a symbol. Call before changing a signature.",
+        "icon": "$(references)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Symbol name"
+            },
+            "filePath": {
+              "type": "string",
+              "description": "Defining file, optional"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "riaf_get_neighbors",
+        "displayName": "Neighbors (RIAF)",
+        "toolReferenceName": "riafNeighbors",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "One-hop callers, callees and imports of a file or symbol.",
+        "modelDescription": "One-hop callers, callees and imports of a file or symbol.",
+        "icon": "$(type-hierarchy)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path"
+            },
+            "symbol": {
+              "type": "string",
+              "description": "Optional symbol"
+            }
+          },
+          "required": [
+            "filePath"
+          ]
+        }
+      },
+      {
+        "name": "riaf_get_service_topology",
+        "displayName": "Service topology (RIAF)",
+        "toolReferenceName": "riafTopology",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Spring services, REST endpoints, Feign clients and gateway routes from the org index.",
+        "modelDescription": "Spring services, REST endpoints, Feign clients and gateway routes from the org index.",
+        "icon": "$(server)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "serviceName": {
+              "type": "string",
+              "description": "Optional service filter"
+            }
+          }
+        }
+      },
+      {
+        "name": "riaf_resolve_api_contract",
+        "displayName": "API contract (RIAF)",
+        "toolReferenceName": "riafContract",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Resolve an HTTP method and path to the backend handler and DTOs.",
+        "modelDescription": "Resolve an HTTP method and path to the backend handler and DTOs.",
+        "icon": "$(globe)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "httpMethod": {
+              "type": "string",
+              "description": "GET, POST, …"
+            },
+            "pathPattern": {
+              "type": "string",
+              "description": "e.g. /api/orders/**"
+            }
+          },
+          "required": [
+            "httpMethod",
+            "pathPattern"
+          ]
+        }
+      },
+      {
+        "name": "riaf_get_dependency_impact",
+        "displayName": "Dependency impact (RIAF)",
+        "toolReferenceName": "riafImpact",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Which modules depend on a Maven artifactId or npm package.",
+        "modelDescription": "Which modules depend on a Maven artifactId or npm package.",
+        "icon": "$(package)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Artifact or package name"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "riaf_get_config_drift",
+        "displayName": "Config drift (RIAF)",
+        "toolReferenceName": "riafConfig",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Configuration keys whose values differ between environments.",
+        "modelDescription": "Configuration keys whose values differ between environments.",
+        "icon": "$(settings-gear)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "serviceName": {
+              "type": "string",
+              "description": "Service name"
+            }
+          },
+          "required": [
+            "serviceName"
+          ]
+        }
+      },
+      {
+        "name": "riaf_get_infra_resources",
+        "displayName": "Infra resources (RIAF)",
+        "toolReferenceName": "riafInfra",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Terraform resources, Kubernetes manifests or CI pipeline jobs.",
+        "modelDescription": "Terraform resources, Kubernetes manifests or CI pipeline jobs.",
+        "icon": "$(cloud)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "description": "terraform, k8s or pipeline"
+            },
+            "filter": {
+              "type": "string",
+              "description": "Optional type/kind/stage"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      },
+      {
+        "name": "riaf_get_git_context",
+        "displayName": "Git context (RIAF)",
+        "toolReferenceName": "riafGit",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Branch, uncommitted changes, recent commits and hot files.",
+        "modelDescription": "Branch, uncommitted changes, recent commits and hot files.",
+        "icon": "$(git-branch)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "recentFiles": {
+              "type": "number",
+              "description": "How many hot files, default 10"
+            }
+          }
+        }
+      },
+      {
+        "name": "riaf_get_symbol",
+        "displayName": "Get symbol (RIAF)",
+        "toolReferenceName": "riafSymbol",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "One indexed symbol in a file.",
+        "modelDescription": "One indexed symbol in a file.",
+        "icon": "$(symbol-method)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path"
+            },
+            "name": {
+              "type": "string",
+              "description": "Symbol name"
+            }
+          },
+          "required": [
+            "filePath",
+            "name"
+          ]
+        }
+      },
+      {
+        "name": "riaf_get_dir_tree",
+        "displayName": "Directory tree (RIAF)",
+        "toolReferenceName": "riafTree",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Directory tree up to a depth.",
+        "modelDescription": "Directory tree up to a depth.",
+        "icon": "$(list-tree)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "dirPath": {
+              "type": "string",
+              "description": "Workspace-relative path"
+            },
+            "depth": {
+              "type": "number",
+              "description": "default 2"
+            }
+          }
+        }
+      },
+      {
+        "name": "riaf_read_lint_errors",
+        "displayName": "Lint errors (RIAF)",
+        "toolReferenceName": "riafLint",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Language-server diagnostics.",
+        "modelDescription": "Language-server diagnostics.",
+        "icon": "$(warning)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Optional path"
+            }
+          }
+        }
+      },
+      {
+        "name": "riaf_search_web",
+        "displayName": "Web search (RIAF)",
+        "toolReferenceName": "riafWeb",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Search the web via Tavily or the gateway.",
+        "modelDescription": "Search the web via Tavily or the gateway.",
+        "icon": "$(globe)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Search query"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      },
+      {
+        "name": "riaf_verify_security_compliance",
+        "displayName": "Security scan (RIAF)",
+        "toolReferenceName": "riafSecurity",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Scan for secrets and unsafe APIs.",
+        "modelDescription": "Scan for secrets and unsafe APIs.",
+        "icon": "$(shield)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "dirPath": {
+              "type": "string",
+              "description": "Directory, default src"
+            }
+          }
+        }
+      },
+      {
+        "name": "riaf_get_pipeline_blast_radius",
+        "displayName": "Pipeline blast radius (RIAF)",
+        "toolReferenceName": "riafBlast",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "CI jobs that depend on a job.",
+        "modelDescription": "CI jobs that depend on a job.",
+        "icon": "$(rocket)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job": {
+              "type": "string",
+              "description": "Job name"
+            }
+          },
+          "required": [
+            "job"
+          ]
+        }
+      },
+      {
+        "name": "riaf_get_iac_topology",
+        "displayName": "IaC topology (RIAF)",
+        "toolReferenceName": "riafIac",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Terraform resources grouped by type.",
+        "modelDescription": "Terraform resources grouped by type.",
+        "icon": "$(cloud)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "resourceType": {
+              "type": "string",
+              "description": "Optional type filter"
+            }
+          }
+        }
+      },
+      {
+        "name": "riaf_list_mcp_tools",
+        "displayName": "List MCP tools (RIAF)",
+        "toolReferenceName": "riafMcp",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Servers declared in .mcp.json.",
+        "modelDescription": "Servers declared in .mcp.json.",
+        "icon": "$(server)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
       }
     ],
     "commands": [
@@ -194,6 +728,52 @@
         "title": "RIAF: Rewind (restore files / conversation from a checkpoint)",
         "category": "RIAF",
         "icon": "$(history)"
+      },
+      {
+        "command": "riaf.rememberThis",
+        "title": "RIAF: Remember This",
+        "category": "RIAF",
+        "icon": "$(bookmark)"
+      },
+      {
+        "command": "riaf.analyse",
+        "title": "RIAF: Write Context Document",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.commitMessage",
+        "title": "RIAF: Generate Commit Message",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.quickEdit",
+        "title": "RIAF: Edit Selection",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.newNote",
+        "title": "RIAF: New Notepad",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.exportSettings",
+        "title": "RIAF: Export Settings",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.importSettings",
+        "title": "RIAF: Import Settings",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.setWebSearchKey",
+        "title": "RIAF: Set Web Search Key",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.setProviderKey",
+        "title": "RIAF: Set Provider Key",
+        "category": "RIAF"
       }
     ],
     "configuration": {
@@ -396,6 +976,55 @@
           "default": true,
           "description": "Snapshot files before the agent edits them so a turn can be rewound (RIAF: Rewind)."
         },
+        "riaf.agent.maxConsecutiveToolFails": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Consecutive tool failures before the agent stops."
+        },
+        "riaf.agent.llmStreamStallTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 10000,
+          "maximum": 300000,
+          "description": "Silence (ms) before a model stream is treated as stalled and retried. Edits get a longer window."
+        },
+        "riaf.agent.exploreMaxSteps": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Tool-call steps the read-only explore subagent may take."
+        },
+        "riaf.agent.diagnosticsSettleMs": {
+          "type": "number",
+          "default": 1200,
+          "minimum": 0,
+          "maximum": 5000,
+          "description": "How long to wait for language-server diagnostics after an edit."
+        },
+        "riaf.agent.enableLightAgent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Smaller profile, no plan, and a tighter read budget. For narrow follow-ups."
+        },
+        "riaf.agent.enableParallelReadBatching": {
+          "type": "boolean",
+          "default": false,
+          "description": "After a read-only tool call, a side-call may add up to four more reads to run in the same turn."
+        },
+        "riaf.agent.sessionBudgetUsd": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Stop @riaf when this session's estimated cost reaches this many USD. 0 disables the guard."
+        },
+        "riaf.agent.sandboxVerificationNudge": {
+          "type": "boolean",
+          "default": false,
+          "description": "Instead of auto-running tests, tell the agent which repo command to run. Ignored when auto-verify is on."
+        },
         "riaf.claudeCode.writeUserSettings": {
           "type": "boolean",
           "default": true,
@@ -431,6 +1060,114 @@
           "type": "number",
           "default": 3128,
           "description": "Port of the local proxy bridge."
+        },
+        "riaf.models.main": {
+          "type": "string",
+          "default": "",
+          "description": "Model id for the main purpose. Empty uses the chat or gateway model. Autocomplete stays off until set."
+        },
+        "riaf.models.plan": {
+          "type": "string",
+          "default": "",
+          "description": "Model id for the plan purpose. Empty uses the chat or gateway model. Autocomplete stays off until set."
+        },
+        "riaf.models.summary": {
+          "type": "string",
+          "default": "",
+          "description": "Model id for the summary purpose. Empty uses the chat or gateway model. Autocomplete stays off until set."
+        },
+        "riaf.models.explore": {
+          "type": "string",
+          "default": "",
+          "description": "Model id for the explore purpose. Empty uses the chat or gateway model. Autocomplete stays off until set."
+        },
+        "riaf.models.critic": {
+          "type": "string",
+          "default": "",
+          "description": "Model id for the critic purpose. Empty uses the chat or gateway model. Autocomplete stays off until set."
+        },
+        "riaf.models.commit": {
+          "type": "string",
+          "default": "",
+          "description": "Model id for the commit purpose. Empty uses the chat or gateway model. Autocomplete stays off until set."
+        },
+        "riaf.models.autocomplete": {
+          "type": "string",
+          "default": "",
+          "description": "Model id for the autocomplete purpose. Empty uses the chat or gateway model. Autocomplete stays off until set."
+        },
+        "riaf.general.aiInstructions": {
+          "type": "string",
+          "default": "",
+          "description": "Extra instructions added to every agent prompt."
+        },
+        "riaf.general.disableSystemPrompt": {
+          "type": "boolean",
+          "default": false,
+          "description": "Send only the AI instructions and the mode line, not the built-in tool policy."
+        },
+        "riaf.general.metricsOptOut": {
+          "type": "boolean",
+          "default": false,
+          "description": "Do not record token totals."
+        },
+        "riaf.webSearch.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the search_web tool."
+        },
+        "riaf.webSearch.provider": {
+          "type": "string",
+          "enum": [
+            "tavily",
+            "gateway"
+          ],
+          "default": "tavily",
+          "description": "tavily uses a key in SecretStorage. gateway posts to <gateway>/search."
+        },
+        "riaf.agent.approveTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask before a shell command that is not on the allow list. Off runs those commands without a dialog. Denied commands stay denied."
+        },
+        "riaf.agent.approveMcp": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask before each call to an external MCP tool."
+        },
+        "riaf.providers": {
+          "type": "object",
+          "default": {
+            "active": "",
+            "anthropicModel": "",
+            "openaiModel": "",
+            "geminiModel": "",
+            "ollamaUrl": "http://127.0.0.1:11434",
+            "ollamaModel": "",
+            "compatibleUrl": "",
+            "compatibleModel": "",
+            "hiddenModels": [],
+            "customModels": [],
+            "overrides": {},
+            "reasoningEnabled": false,
+            "reasoningBudget": 0,
+            "reasoningEffort": "medium"
+          },
+          "description": "Native provider selection, model lists, and reasoning options. API keys stay in SecretStorage."
+        },
+        "riaf.mcp.disabledServers": {
+          "type": "array",
+          "default": [],
+          "description": "MCP server names hidden from @riaf and the MCP settings tab toggle.",
+          "items": { "type": "string" }
+        },
+        "riaf.security.extraRules": {
+          "type": "array",
+          "default": [],
+          "description": "Extra security scan rules: { id, pattern, message }.",
+          "items": {
+            "type": "object"
+          }
         }
       }
     },
@@ -471,9 +1208,89 @@
         },
         {
           "command": "riaf.proxyBridgeLog"
+        },
+        {
+          "command": "riaf.rememberThis"
+        },
+        {
+          "command": "riaf.analyse"
+        },
+        {
+          "command": "riaf.commitMessage"
+        },
+        {
+          "command": "riaf.quickEdit"
+        },
+        {
+          "command": "riaf.newNote"
+        },
+        {
+          "command": "riaf.exportSettings"
+        },
+        {
+          "command": "riaf.importSettings"
+        },
+        {
+          "command": "riaf.setWebSearchKey"
+        },
+        {
+          "command": "riaf.setProviderKey"
         }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "riaf.quickEdit",
+        "key": "ctrl+alt+k",
+        "mac": "ctrl+alt+k",
+        "when": "editorHasSelection && !editorReadonly"
+      },
+      {
+        "command": "riaf.commitMessage",
+        "key": "ctrl+alt+m",
+        "mac": "ctrl+alt+m",
+        "when": "scmProvider != ''"
+      },
+      {
+        "command": "riaf.openSettings",
+        "key": "ctrl+alt+,",
+        "mac": "ctrl+alt+,",
+        "when": "editorTextFocus"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "riaf.welcome",
+        "title": "Get started with RIAF",
+        "description": "Index the repo, talk to @riaf, and point Claude Code at the same index.",
+        "steps": [
+          {
+            "id": "index",
+            "title": "Index the workspace",
+            "description": "Run **RIAF: Reindex Workspace**. The first chat message also indexes if nothing is built yet.",
+            "media": {
+              "markdown": "### Index\nRIAF builds a local BM25 and embedding index for this folder."
+            }
+          },
+          {
+            "id": "chat",
+            "title": "Ask @riaf",
+            "description": "Open Copilot Chat and mention `@riaf`. `/run` plans a ledger; `/status` shows it.",
+            "media": {
+              "markdown": "### Chat\n`@riaf /run fix the failing test` plans, edits and verifies."
+            }
+          },
+          {
+            "id": "claude",
+            "title": "Claude Code",
+            "description": "Run **RIAF: Set up Claude Code** so Claude sees the MCP tools and `/riaf-run`.",
+            "media": {
+              "markdown": "### Claude Code\nSetup writes `.mcp.json` and the `/riaf-run` command."
+            }
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "build": "node esbuild.mjs",
@@ -490,6 +1307,8 @@
     "@bosch-mps/token-opt": "0.1.0",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@sqlite.org/sqlite-wasm": "^3.54.1-build1",
+    "undici": "^7.30.1",
+    "@bosch-mps/riaf-engine": "0.1.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {

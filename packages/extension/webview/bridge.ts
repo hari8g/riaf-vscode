@@ -15,11 +15,16 @@ export type HostRequest =
 	| { type: 'getRules' } | { type: 'setRules'; text: string }
 	| { type: 'setupClaudeCode' } | { type: 'setProxyCredentials' } | { type: 'bridgeStart' } | { type: 'bridgeStop' } | { type: 'bridgeLog' }
 	| { type: 'openNativeSettings' } | { type: 'openOutput' } | { type: 'openReport' } | { type: 'openGraph' }
-	| { type: 'resetUsage' };
+	| { type: 'resetUsage' }
+	| { type: 'mcpRefresh' }
+	| { type: 'detectProviders' };
 
 export type HostResponse = {
 	settings?: SettingsSnapshot; index?: IndexStatus; usage?: { session: UsageTotals; allTime: UsageTotals }; claudeCode?: ClaudeCodeStatus;
 	rules?: string; rulesPath?: string; bridge?: BridgeStatus; connection?: ConnectionTest; transportId?: string; models?: string[]; error?: string;
+	mcp?: { servers: { name: string; transport: string; target: string; enabled: boolean; tools: string[]; error?: string }[] };
+	ruleSources?: string[];
+	detected?: { ollama: string[] };
 };
 
 type Envelope = { id: number; req?: HostRequest; res?: HostResponse; push?: HostResponse };

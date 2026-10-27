@@ -55,7 +55,7 @@ describe('local proxy bridge', () => {
 	beforeAll(async () => {
 		up = await fakeUpstream('hpg5ban', 'p@ss#1');
 		target = await targetServer();
-		bridge = await startProxyBridge({ listenPort: 0, upstream: { host: '127.0.0.1', port: up.port, username: 'hpg5ban', password: 'p@ss#1' }, noProxy: ['direct.local'], log: m => log.push(m) });
+		bridge = await startProxyBridge({ listenPort: 0, upstream: { host: '127.0.0.1', port: up.port, username: 'hpg5ban', password: 'p@ss#1' }, noProxy: ['direct.invalid'], log: m => log.push(m) });
 	});
 	afterAll(async () => { await bridge.close(); up.close(); target.close(); });
 
@@ -88,9 +88,9 @@ describe('local proxy bridge', () => {
 	});
 
 	it('bypasses the upstream for NO_PROXY hosts', async () => {
-		// "direct.local" isn't resolvable; the bridge must try to connect directly (and fail with 502), never hit the upstream
+		// ".invalid" is reserved and does not resolve. ".local" is mDNS on macOS and can stall the lookup past the test timeout.
 		const before = up.seen.length;
-		const r = await connectThrough(bridge.port, 'direct.local:1', '/');
+		const r = await connectThrough(bridge.port, 'direct.invalid:1', '/');
 		expect(r.connectStatus).toBe(502);
 		expect(up.seen.length).toBe(before);
 	});

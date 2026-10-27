@@ -31,6 +31,11 @@ export interface EmbeddingConfig {
 	batchSize?: number;
 	/** Cap on characters per chunk sent to the model (default 6000 ≈ 1500 tokens). */
 	maxChars?: number;
+	/**
+	 * HTTP implementation. The extension passes a proxy-aware fetch so corporate proxies and the
+	 * local proxy bridge apply. Defaults to the global `fetch`.
+	 */
+	fetchImpl?: (url: string, init: RequestInit) => Promise<Response>;
 }
 
 export interface Embedder {
@@ -78,7 +83,7 @@ export function deserializeEmbedding(blob: Uint8Array): EmbeddingVector {
 /**
  * Build an embedder for the given endpoint. Returns `undefined` when embeddings are
  * disabled or misconfigured so callers can use `embedder?.embedText(...)`.
- * Uses the global `fetch` (Node 18+).
+ * Uses `cfg.fetchImpl` when set, otherwise the global `fetch` (Node 18+).
  */
 export function createEmbedder(cfg: EmbeddingConfig | undefined): Embedder | undefined {
 	if (!cfg || !cfg.enabled || !cfg.url || !cfg.model) return undefined;
@@ -97,7 +102,7 @@ export function createEmbedder(cfg: EmbeddingConfig | undefined): Embedder | und
 			const timer = setTimeout(() => controller.abort(), timeoutMs);
 			let resp: Response;
 			try {
-				resp = await fetch(cfg.url, {
+				resp = await (cfg.fetchImpl ?? fetch)(cfg.url, {
 					method: 'POST',
 					headers,
 					body: JSON.stringify({ model: cfg.model, input: texts }),

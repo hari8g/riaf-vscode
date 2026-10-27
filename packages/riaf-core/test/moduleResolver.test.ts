@@ -184,6 +184,15 @@ describe('moduleResolver: Java / Kotlin, Go, Rust, C', () => {
 		expect(r.resolve('src/lib.rs', 'serde::Deserialize', 'Rust')).toEqual({ resolvedFile: null, isExternal: true });
 	});
 
+	it('resolves C# namespaces to .cs files and treats the BCL as internal', () => {
+		const files = ['src/Orders/OrderService.cs', 'src/Orders/Money.cs'];
+		const root = makeRepo(Object.fromEntries(files.map(f => [f, 'namespace Orders { }'])));
+		const r = createModuleResolver(root, files);
+		expect(r.resolve('src/Orders/Money.cs', 'Orders.OrderService', 'C#').resolvedFile).toBe('src/Orders/OrderService.cs');
+		expect(r.resolve('src/Orders/Money.cs', 'System.Collections.Generic.List', 'C#')).toEqual({ resolvedFile: null, isExternal: false });
+		expect(r.resolve('src/Orders/Money.cs', 'Newtonsoft.Json.JsonConvert', 'C#')).toEqual({ resolvedFile: null, isExternal: true });
+	});
+
 	it('resolves C/C++ includes via local dir and include roots', () => {
 		const files = ['CMakeLists.txt', 'include/acme/orders.h', 'src/orders.cpp', 'src/orders_impl.h'];
 		const root = makeRepo(Object.fromEntries(files.map(f => [f, ''])));

@@ -53,7 +53,7 @@ export function createModuleResolver(workspaceRoot: string, files: Iterable<stri
 		fileSet.add(p);
 		let d = posix.dirname(p);
 		while (d && d !== '.' && !dirs.has(d)) { dirs.add(d); d = posix.dirname(d); }
-		if (/\.(java|kt|kts|scala)$/.test(p)) {
+		if (/\.(java|kt|kts|scala|cs)$/.test(p)) {
 			const parts = p.split('/');
 			// register every suffix of ≥2 segments so src/main/java/com/x/Foo.java is found by com/x/Foo.java
 			for (let i = 0; i < parts.length - 1; i++) {
@@ -358,13 +358,12 @@ export function createModuleResolver(workspaceRoot: string, files: Iterable<stri
 			case 'Rust': return resolveRust(from, mod);
 			case 'C': case 'C++': return resolveC(from, mod, !mod.startsWith('<'));
 			case 'Ruby': case 'PHP': return resolveRubyPhp(from, mod, language);
-			case 'C#': return { resolvedFile: null, isExternal: /^(System|Microsoft|Windows)\./.test(mod) ? false : !isCSharpNamespaceInRepo(mod) };
+			case 'C#': {
+				if (/^(System|Microsoft|Windows)(\.|$)/.test(mod)) { return { resolvedFile: null, isExternal: false }; }
+				return resolveJvm(mod, ['.cs']);
+			}
 			default: return { resolvedFile: null, isExternal: !mod.startsWith('.') };
 		}
-	};
-	const isCSharpNamespaceInRepo = (ns: string): boolean => {
-		const tail = ns.split('.').slice(-1)[0];
-		return [...dirs].some(d => d.endsWith(`/${tail}`) || d === tail);
 	};
 
 	return {

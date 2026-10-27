@@ -10,6 +10,12 @@ export interface RiafSettings {
 		headers: Record<string, string>; promptCache: boolean; stream: boolean;
 	};
 	claudeCode: { writeUserSettings: boolean; proxyUrl: string; noProxy: string[]; caCertPath: string; proxyBridge: boolean; proxyBridgePort: number };
+	models: { main: string; plan: string; summary: string; explore: string; critic: string; commit: string; autocomplete: string };
+	general: { aiInstructions: string; disableSystemPrompt: boolean; metricsOptOut: boolean };
+	webSearch: { enabled: boolean; provider: 'tavily' | 'gateway' };
+	security: { extraRules: { id: string; pattern: string; message: string }[] };
+	mcp: { disabledServers: string[] };
+	providers: ProviderSettings;
 	agent: {
 		maxIterations: number; maxReadOnlyCalls: number; generatePlan: boolean; autoVerify: boolean;
 		requireEditApproval: boolean; allowRunCommand: boolean; contextWindowRatio: number;
@@ -18,8 +24,31 @@ export interface RiafSettings {
 		sandbox: SandboxMode;
 		hooks: { preTool?: HookEntry[]; postEdit?: HookEntry[] };
 		summarizeHistory: boolean; exploreSubagent: boolean; checkpoints: boolean;
+		maxConsecutiveToolFails: number; llmStreamStallTimeoutMs: number; exploreMaxSteps: number; diagnosticsSettleMs: number;
+		enableLightAgent: boolean; enableParallelReadBatching: boolean; sessionBudgetUsd: number; sandboxVerificationNudge: boolean;
+		approveTerminal: boolean; approveMcp: boolean;
 	};
 }
+
+export type ProviderKind = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'openaiCompatible';
+
+export type ProviderSettings = {
+	active: '' | ProviderKind | 'gateway';
+	anthropicModel: string; openaiModel: string; geminiModel: string;
+	ollamaUrl: string; ollamaModel: string;
+	compatibleUrl: string; compatibleModel: string;
+	hiddenModels: string[]; customModels: string[];
+	overrides: Record<string, unknown>;
+	reasoningEnabled: boolean; reasoningBudget: number; reasoningEffort: string;
+};
+
+export const DEFAULT_PROVIDERS: ProviderSettings = {
+	active: '', anthropicModel: '', openaiModel: '', geminiModel: '',
+	ollamaUrl: 'http://127.0.0.1:11434', ollamaModel: '',
+	compatibleUrl: '', compatibleModel: '',
+	hiddenModels: [], customModels: [], overrides: {},
+	reasoningEnabled: false, reasoningBudget: 0, reasoningEffort: 'medium',
+};
 
 export type SandboxMode = 'auto' | 'policy' | 'seatbelt' | 'off';
 export type HookEntry = { matcher?: string; command: string; timeoutMs?: number };
@@ -55,6 +84,20 @@ export function readSettings(): RiafSettings {
 			proxyBridge: c.get('claudeCode.proxyBridge', true),
 			proxyBridgePort: c.get('claudeCode.proxyBridgePort', 3128),
 		},
+		models: {
+			main: c.get('models.main', ''), plan: c.get('models.plan', ''), summary: c.get('models.summary', ''),
+			explore: c.get('models.explore', ''), critic: c.get('models.critic', ''), commit: c.get('models.commit', ''),
+			autocomplete: c.get('models.autocomplete', ''),
+		},
+		general: {
+			aiInstructions: c.get('general.aiInstructions', ''),
+			disableSystemPrompt: c.get('general.disableSystemPrompt', false),
+			metricsOptOut: c.get('general.metricsOptOut', false),
+		},
+		webSearch: { enabled: c.get('webSearch.enabled', false), provider: c.get<'tavily' | 'gateway'>('webSearch.provider', 'tavily') },
+		security: { extraRules: c.get('security.extraRules', []) },
+		mcp: { disabledServers: c.get<string[]>('mcp.disabledServers', []) },
+		providers: { ...DEFAULT_PROVIDERS, ...c.get<Partial<ProviderSettings>>('providers', {}) },
 		agent: {
 			maxIterations: c.get('agent.maxIterations', 25),
 			maxReadOnlyCalls: c.get('agent.maxReadOnlyCalls', 12),
@@ -72,6 +115,16 @@ export function readSettings(): RiafSettings {
 			summarizeHistory: c.get('agent.summarizeHistory', true),
 			exploreSubagent: c.get('agent.exploreSubagent', true),
 			checkpoints: c.get('agent.checkpoints', true),
+			maxConsecutiveToolFails: c.get('agent.maxConsecutiveToolFails', 3),
+			llmStreamStallTimeoutMs: c.get('agent.llmStreamStallTimeoutMs', 120_000),
+			exploreMaxSteps: c.get('agent.exploreMaxSteps', 8),
+			diagnosticsSettleMs: c.get('agent.diagnosticsSettleMs', 1_200),
+			enableLightAgent: c.get('agent.enableLightAgent', false),
+			enableParallelReadBatching: c.get('agent.enableParallelReadBatching', false),
+			sessionBudgetUsd: c.get('agent.sessionBudgetUsd', 0),
+			sandboxVerificationNudge: c.get('agent.sandboxVerificationNudge', false),
+			approveTerminal: c.get('agent.approveTerminal', true),
+			approveMcp: c.get('agent.approveMcp', true),
 		},
 	};
 }

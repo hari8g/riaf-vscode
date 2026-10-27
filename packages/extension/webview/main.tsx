@@ -7,8 +7,8 @@ import { Badge, Button, Note, NumberInput, Row, Section, Select, StatCard, TextA
 
 type Settings = Record<string, unknown>;
 const TABS = [
-	['gateway', 'Gateway'], ['index', 'Repository Intelligence'], ['agent', 'Agent'], ['tools', 'Tools'],
-	['rules', 'Rules'], ['usage', 'Usage'], ['claude', 'Claude Code'],
+	['gateway', 'Gateway'], ['providers', 'Providers'], ['index', 'Repository Intelligence'], ['agent', 'Agent'], ['tools', 'Tools'],
+	['mcp', 'MCP'], ['rules', 'Rules'], ['usage', 'Usage'], ['claude', 'Claude Code'],
 ] as const;
 type Tab = typeof TABS[number][0];
 
@@ -51,10 +51,12 @@ function App() {
 			<main style={{ padding: '20px 28px', maxWidth: 860 }}>
 				{state.error && <Note kind="warn">{state.error}</Note>}
 				{show('gateway') && <Gateway s={s} get={get} set={set} state={state} call={call} />}
+				{show('providers') && <Providers get={get} set={set} detected={state.detected} call={call} />}
 				{show('index') && <RepoIntelligence get={get} set={set} index={state.index} call={call} />}
 				{show('agent') && <Agent get={get} set={set} />}
 				{show('tools') && <Tools get={get} set={set} />}
-				{show('rules') && <Rules rules={state.rules ?? ''} path={state.rulesPath} call={call} />}
+				{show('mcp') && <Mcp mcp={state.mcp} get={get} set={set} call={call} />}
+				{show('rules') && <Rules rules={state.rules ?? ''} path={state.rulesPath} sources={state.ruleSources} call={call} />}
 				{show('usage') && <Usage usage={state.usage} transportId={state.transportId} call={call} />}
 				{show('claude') && <ClaudeCode status={state.claudeCode} bridge={state.bridge} call={call} get={get} set={set} />}
 			</main>
@@ -147,6 +149,62 @@ function Agent({ get, set }: P) {
 			<Row label="Summarise long threads" desc="Replace the oldest turns with a summary past ~60% of the budget. Falls back to dropping them if the summary call fails."><Toggle value={get('agent.summarizeHistory', true)} onChange={v => set('agent.summarizeHistory', v)} /></Row>
 			<Row label="Explore subagent" desc="A read-only side loop that searches and reads, then returns a short report"><Toggle value={get('agent.exploreSubagent', true)} onChange={v => set('agent.exploreSubagent', v)} /></Row>
 			<Row label="Checkpoints" desc="Snapshot files before the agent edits them so RIAF: Rewind can restore a turn"><Toggle value={get('agent.checkpoints', true)} onChange={v => set('agent.checkpoints', v)} /></Row>
+			<Row label="Light agent" desc="Skip the plan, shrink the repo profile and cap exploration at 6 reads. For narrow follow-ups."><Toggle value={get('agent.enableLightAgent', false)} onChange={v => set('agent.enableLightAgent', v)} /></Row>
+			<Row label="Parallel reads" desc="A side-call may add up to four extra reads to run alongside one read-only call."><Toggle value={get('agent.enableParallelReadBatching', false)} onChange={v => set('agent.enableParallelReadBatching', v)} /></Row>
+			<Row label="Nudge to verify" desc="When auto-verify is off, tell the agent which test or start command to run instead of running it."><Toggle value={get('agent.sandboxVerificationNudge', false)} onChange={v => set('agent.sandboxVerificationNudge', v)} /></Row>
+			<Row label="Consecutive failures" desc="Stop after this many tool failures in a row (1–10)"><NumberInput min={1} max={10} value={get('agent.maxConsecutiveToolFails', 3)} onChange={v => set('agent.maxConsecutiveToolFails', v)} /></Row>
+			<Row label="Explore steps" desc="Tool calls the explore subagent may take (1–20)"><NumberInput min={1} max={20} value={get('agent.exploreMaxSteps', 8)} onChange={v => set('agent.exploreMaxSteps', v)} /></Row>
+			<Row label="Stream stall" desc="Seconds of silence before a model stream is retried"><NumberInput min={10} max={300} value={Math.round(get('agent.llmStreamStallTimeoutMs', 120000) / 1000)} onChange={v => set('agent.llmStreamStallTimeoutMs', v * 1000)} /></Row>
+			<Row label="Diagnostics wait" desc="Milliseconds to wait for the language server after an edit"><NumberInput min={0} max={5000} step={100} value={get('agent.diagnosticsSettleMs', 1200)} onChange={v => set('agent.diagnosticsSettleMs', v)} /></Row>
+			<Row label="Session budget (USD)" desc="Stop when this session's estimated cost reaches this. 0 means no limit."><NumberInput min={0} max={1000} step={0.5} value={get('agent.sessionBudgetUsd', 0)} onChange={v => set('agent.sessionBudgetUsd', v)} /></Row>
+			<Row label="AI instructions" desc="Added to every agent prompt. Leave empty to keep the built-in policy only."><TextArea value={get('general.aiInstructions', '')} onChange={v => set('general.aiInstructions', v)} /></Row>
+			<Row label="Disable built-in system prompt" desc="Send only your AI instructions plus the mode line."><Toggle value={get('general.disableSystemPrompt', false)} onChange={v => set('general.disableSystemPrompt', v)} /></Row>
+			<Row label="Metrics opt-out" desc="Do not record token totals for this session."><Toggle value={get('general.metricsOptOut', false)} onChange={v => set('general.metricsOptOut', v)} /></Row>
+			{(['main', 'plan', 'summary', 'explore', 'critic', 'commit', 'autocomplete'] as const).map(purpose => (
+				<Row key={purpose} label={`${purpose} model`} desc={purpose === 'autocomplete' ? 'Inline completions stay off until this is set.' : 'Empty uses the chat or gateway model.'}>
+					<TextInput mono value={get(`models.${purpose}`, '')} onChange={v => set(`models.${purpose}`, v)} placeholder="provider model id" />
+				</Row>
+			))}
+		</Section>
+	);
+}
+
+function Providers({ get, set, detected, call }: P & { detected?: { ollama: string[] }; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+	const providers = get<Record<string, unknown>>('providers', {});
+	const patch = (key: string, value: unknown) => set('providers', { ...providers, [key]: value });
+	const lines = (value: unknown) => Array.isArray(value) ? (value as string[]).join('\n') : '';
+	return (
+		<Section id="providers" title="Providers" desc="Native model providers. Leave Active empty to keep using the gateway or Copilot. Keys are saved with RIAF: Set Provider Key, not in this form.">
+			<Row label="Active provider" desc="gateway keeps the Gateway tab. The others call the vendor API.">
+				<Select value={String(providers.active ?? '')} onChange={v => patch('active', v)} options={[
+					{ value: '', label: 'Gateway or Copilot' }, { value: 'gateway', label: 'Gateway' },
+					{ value: 'anthropic', label: 'Anthropic' }, { value: 'openai', label: 'OpenAI' },
+					{ value: 'gemini', label: 'Gemini' }, { value: 'ollama', label: 'Ollama' }, { value: 'openaiCompatible', label: 'OpenAI-compatible' },
+				]} />
+			</Row>
+			<Row label="Anthropic model"><TextInput mono value={String(providers.anthropicModel ?? '')} onChange={v => patch('anthropicModel', v)} placeholder="claude-sonnet-4-5" /></Row>
+			<Row label="OpenAI model"><TextInput mono value={String(providers.openaiModel ?? '')} onChange={v => patch('openaiModel', v)} placeholder="gpt-4.1" /></Row>
+			<Row label="Gemini model"><TextInput mono value={String(providers.geminiModel ?? '')} onChange={v => patch('geminiModel', v)} placeholder="gemini-2.5-pro" /></Row>
+			<Row label="Ollama URL"><TextInput mono value={String(providers.ollamaUrl ?? 'http://127.0.0.1:11434')} onChange={v => patch('ollamaUrl', v)} /></Row>
+			<Row label="Ollama model"><TextInput mono value={String(providers.ollamaModel ?? '')} onChange={v => patch('ollamaModel', v)} placeholder="qwen2.5-coder:7b" /></Row>
+			<Row label="Compatible base URL"><TextInput mono value={String(providers.compatibleUrl ?? '')} onChange={v => patch('compatibleUrl', v)} placeholder="http://127.0.0.1:8000/v1" /></Row>
+			<Row label="Compatible model"><TextInput mono value={String(providers.compatibleModel ?? '')} onChange={v => patch('compatibleModel', v)} /></Row>
+			<Row label="Reasoning"><Toggle value={Boolean(providers.reasoningEnabled)} onChange={v => patch('reasoningEnabled', v)} /></Row>
+			<Row label="Reasoning budget" desc="Anthropic thinking budget tokens. 0 leaves it off."><NumberInput min={0} max={32000} value={Number(providers.reasoningBudget ?? 0)} onChange={v => patch('reasoningBudget', v)} /></Row>
+			<Row label="Reasoning effort" desc="Sent as reasoning_effort on OpenAI-compatible calls.">
+				<Select value={String(providers.reasoningEffort ?? 'medium')} onChange={v => patch('reasoningEffort', v)} options={[{ value: 'low', label: 'Low' }, { value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }]} />
+			</Row>
+			<Row label="Hidden models" desc="One model id per line. Hidden ids are dropped from the visible list." wide>
+				<TextArea mono rows={3} value={lines(providers.hiddenModels)} onChange={v => patch('hiddenModels', v.split('\n').map(x => x.trim()).filter(Boolean))} />
+			</Row>
+			<Row label="Custom models" desc="One model id per line. Added on top of a discovered list." wide>
+				<TextArea mono rows={3} value={lines(providers.customModels)} onChange={v => patch('customModels', v.split('\n').map(x => x.trim()).filter(Boolean))} />
+			</Row>
+			<Row label="Overrides JSON" desc="Shallow-merged into the provider request body." wide>
+				<TextArea mono rows={4} value={JSON.stringify(providers.overrides ?? {}, null, 2)} onChange={v => { try { patch('overrides', JSON.parse(v || '{}')); } catch { /* wait */ } }} />
+			</Row>
+			<div><Button onClick={() => call({ type: 'detectProviders' })}>Detect local Ollama</Button></div>
+			{detected && <Note>{detected.ollama.length ? `Ollama models: ${detected.ollama.join(', ')}` : 'No Ollama models at the URL above.'}</Note>}
 		</Section>
 	);
 }
@@ -156,6 +214,12 @@ function Tools({ get, set }: P) {
 		<Section id="tools" title="Tools" desc="What the agent may do without asking. Reads and searches never ask.">
 			<Row label="Edits need approval" desc="Show each edit as a diff to accept or reject"><Toggle value={get('agent.requireEditApproval', true)} onChange={v => set('agent.requireEditApproval', v)} /></Row>
 			<Row label="Allow shell commands" desc="run_command / run_tests. Commands not on the allowlist still ask."><Toggle value={get('agent.allowRunCommand', true)} onChange={v => set('agent.allowRunCommand', v)} /></Row>
+			<Row label="Approve terminal" desc="Ask before a command that is not allow-listed. Off runs it. Denied commands stay denied."><Toggle value={get('agent.approveTerminal', true)} onChange={v => set('agent.approveTerminal', v)} /></Row>
+			<Row label="Approve MCP calls" desc="Ask before each external MCP tool call."><Toggle value={get('agent.approveMcp', true)} onChange={v => set('agent.approveMcp', v)} /></Row>
+			<Row label="Web search" desc="search_web uses Tavily or the gateway /search route."><Toggle value={get('webSearch.enabled', false)} onChange={v => set('webSearch.enabled', v)} /></Row>
+			<Row label="Web search provider" desc="tavily needs RIAF: Set Web Search Key. gateway posts to <gateway>/search.">
+				<Select value={get('webSearch.provider', 'tavily')} onChange={v => set('webSearch.provider', v)} options={[{ value: 'tavily', label: 'Tavily' }, { value: 'gateway', label: 'Gateway' }]} />
+			</Row>
 			<Row label="Auto-approve detected tests" desc="Run the detected test, typecheck and lint commands without a confirmation dialog"><Toggle value={get('agent.autoApproveDetectedTestCommand', false)} onChange={v => set('agent.autoApproveDetectedTestCommand', v)} /></Row>
 			<Row label="Workspace sandbox" desc="Where shell commands may write. Auto uses macOS Seatbelt when sandbox-exec is available.">
 				<Select value={get<'auto' | 'policy' | 'seatbelt' | 'off'>('agent.sandbox', 'auto')} onChange={v => set('agent.sandbox', v)} options={[
@@ -171,12 +235,33 @@ function Tools({ get, set }: P) {
 			<Row label="Hooks" desc='JSON merged with .riaf/hooks.json: { "preTool": [{ "matcher", "command" }], "postEdit": [...] }. Exit code 2 or {"decision":"block"} blocks the call.' wide>
 				<TextArea mono rows={5} value={JSON.stringify(get('agent.hooks', {}), null, 2)} onChange={v => { try { void set('agent.hooks', JSON.parse(v || '{}')); } catch { /* wait for valid JSON */ } }} />
 			</Row>
-			<Note>Read-only tools (search_codebase, grep, find_references, get_neighbors, …) are also exposed to Copilot Chat as <code>#riaf</code>, <code>#riafContext</code> and <code>#riafSymbols</code>.</Note>
+			<Note>Every read-only tool is also a Copilot language-model tool (<code>#riaf</code>, <code>#riafContext</code>, <code>#riafSymbols</code>, <code>#riafGrep</code>, <code>#riafRefs</code>, and the rest). Edits and shell commands stay on @riaf, where they can ask first.</Note>
 		</Section>
 	);
 }
 
-function Rules({ rules, path, call }: { rules: string; path?: string; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+function Mcp({ mcp, get, set, call }: P & { mcp?: HostResponse['mcp']; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+	const disabled = get<string[]>('mcp.disabledServers', []);
+	const servers = mcp?.servers ?? [];
+	const toggle = (name: string, on: boolean) => {
+		const next = new Set(disabled);
+		if (on) { next.delete(name); } else { next.add(name); }
+		void set('mcp.disabledServers', [...next]);
+	};
+	return (
+		<Section id="mcp" title="MCP" desc="Servers from the workspace .mcp.json and .vscode/mcp.json, then ~/.mcp.json and ~/.cursor/mcp.json. Enabled servers are offered to @riaf as mcp_<server>_<tool>.">
+			<div><Button onClick={() => call({ type: 'mcpRefresh' })}>Refresh tools</Button></div>
+			{servers.map(server => (
+				<Row key={server.name} label={`${server.name} · ${server.transport}`} desc={`${server.target}${server.tools.length ? ` — ${server.tools.join(', ')}` : ''}${server.error ? ` — ${server.error}` : ''}`}>
+					<Toggle value={!disabled.includes(server.name)} onChange={on => toggle(server.name, on)} />
+				</Row>
+			))}
+			{!servers.length && <Note>No MCP servers found. Add one to .mcp.json in this folder, or to ~/.cursor/mcp.json.</Note>}
+		</Section>
+	);
+}
+
+function Rules({ rules, path, sources, call }: { rules: string; path?: string; sources?: string[]; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
 	const [text, setText] = useState(rules);
 	useEffect(() => setText(rules), [rules]);
 	const dirty = text !== rules;
@@ -188,11 +273,12 @@ function Rules({ rules, path, call }: { rules: string; path?: string; call: (r: 
 				<Button disabled={!dirty} onClick={() => setText(rules)}>Revert</Button>
 				<span style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>{path ?? '.riafrules'} · also read by Claude Code via CLAUDE.md after "Set up Claude Code"</span>
 			</div>
+			{sources && sources.length > 0 && <Note>Also loaded into the prompt: {sources.join(', ')}</Note>}
 		</Section>
 	);
 }
 
-function Usage({ usage, transportId, call }: { usage?: { session: UsageTotals; allTime: UsageTotals }; transportId?: string; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+function Usage({ usage, transportId, call }: { usage?: { session: UsageTotals; allTime: UsageTotals; days?: { day: string; inputTokens: number }[]; byProvider?: Record<string, { calls: number; inputTokens: number }>; cacheEfficiency?: number }; transportId?: string; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
 	const s = usage?.session, a = usage?.allTime;
 	const saving = useMemo(() => s && s.inputTokens + s.savedTokens > 0 ? Math.round(100 * s.savedTokens / (s.inputTokens + s.savedTokens)) : 0, [s]);
 	return (
@@ -204,7 +290,17 @@ function Usage({ usage, transportId, call }: { usage?: { session: UsageTotals; a
 				<StatCard label="Output tokens" value={fmtTokens(s?.outputTokens ?? 0)} />
 				<StatCard label="Saved by RIAF" value={fmtTokens(s?.savedTokens ?? 0)} sub={`${saving}% of what would have been sent`} />
 				<StatCard label="Est. cost" value={fmtUsd(s?.costUSD ?? 0)} />
+				<StatCard label="Cache efficiency" value={`${Math.round(100 * (usage?.cacheEfficiency ?? 0))}%`} sub="cache read / prompt tokens" />
 			</div>
+			{usage?.byProvider && Object.keys(usage.byProvider).length > 0 && <Note>{Object.entries(usage.byProvider).map(([name, row]) => `${name}: ${row.calls} calls, ${row.inputTokens} in`).join(' · ')}</Note>}
+			{usage?.days && usage.days.length > 0 && (
+				<div style={{ display: 'flex', gap: 4, alignItems: 'flex-end', height: 48, margin: '8px 0' }}>
+					{usage.days.map(d => {
+						const max = Math.max(1, ...usage.days!.map(x => x.inputTokens));
+						return <div key={d.day} title={`${d.day}: ${d.inputTokens} in`} style={{ flex: 1, height: `${Math.max(4, Math.round(44 * d.inputTokens / max))}px`, background: 'var(--vscode-button-background)' }} />;
+					})}
+				</div>
+			)}
 			<div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)', marginTop: 6 }}>All time</div>
 			<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
 				<StatCard label="Calls" value={String(a?.calls ?? 0)} />

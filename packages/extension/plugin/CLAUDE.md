@@ -1,8 +1,12 @@
 ## RIAF — repository intelligence rules
 
-This repository has a RIAF index available through the `riaf` MCP server (tools:
-`search_codebase`, `search_symbols`, `get_context_profile`, `get_file_outline`, `get_import_graph`,
-`get_indexing_report`, `reindex`). Use them to keep context small and precise.
+This repository has a RIAF index available through the `riaf` MCP server. Tools:
+`search_codebase`, `grep`, `glob`, `search_symbols`, `get_context_profile`, `get_file_outline`,
+`get_import_graph`, `find_references`, `get_neighbors`, `get_service_topology`, `resolve_api_contract`,
+`get_dependency_impact`, `get_config_drift`, `get_infra_resources`, `get_git_context`,
+`get_indexing_report`, `reindex`. For a multi-step change also use `plan_create`, `plan_status`,
+`plan_next`, `plan_mark`, `verify_subtask` and `run_critic`: the ledger lives in `.riaf/runs`.
+Use them to keep context small and precise.
 
 Context gathering
 - Start every task with `search_codebase` (identifiers, concepts, error text) or `get_context_profile`

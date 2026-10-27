@@ -3,7 +3,9 @@ import {
 	applyRoutedAnthropicConversationCache, applyRoutedAnthropicPromptCache, getModelCapabilities,
 	usageFromOpenAIResponse, type LLMMessageUsage, type ProviderName,
 } from '@bosch-mps/token-opt';
-import { readSettings, type RiafSettings } from './config.js';
+import { readSettings, type ProviderKind, type RiafSettings } from './config.js';
+import { buildProviderRequest, parseProviderResponse, type ProviderMessage } from './providerHttp.js';
+import { outboundFetch } from './proxiedFetch.js';
 
 /* ───────────────────────────── transport-neutral message model ───────────────────────────── */
 
@@ -179,7 +181,8 @@ export class GatewayTransport implements ModelTransport {
 			...(stream ? { stream_options: { include_usage: true } } : {}),
 			...(req.tools?.length ? { tools: req.tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } })), tool_choice: 'auto' } : {}),
 		};
-		const res = await fetch(`${this._s.gateway.url}/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body), signal: req.signal });
+		const doFetch = await outboundFetch();
+		const res = await doFetch(`${this._s.gateway.url}/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body), signal: req.signal });
 		if (!res.ok) { throw new Error(`gateway ${res.status}: ${(await res.text()).slice(0, 500)}`); }
 		const contentType = res.headers.get('content-type') ?? '';
 		if (stream && res.body && contentType.includes('text/event-stream')) {
@@ -290,9 +293,73 @@ async function readOpenAIStream(body: ReadableStream<Uint8Array>, onText?: (delt
 	return acc.result();
 }
 
-/** Pick the transport from settings: gateway if configured, else whatever vscode.lm offers. */
-export async function createTransport(preferred?: vscode.LanguageModelChat): Promise<ModelTransport | undefined> {
+const PROVIDER_SECRET: Record<ProviderKind, string> = {
+	anthropic: 'riaf.provider.anthropic', openai: 'riaf.provider.openai', gemini: 'riaf.provider.gemini',
+	ollama: '', openaiCompatible: 'riaf.provider.openaiCompatible',
+};
+
+let providerSecret: (key: string) => PromiseLike<string | undefined> = async () => undefined;
+export function setProviderSecrets(get: (key: string) => PromiseLike<string | undefined>): void { providerSecret = get; }
+
+class NativeProviderTransport implements ModelTransport {
+	readonly id: string;
+	readonly providerName: ProviderName;
+	readonly contextWindow: number;
+	readonly maxOutputTokens: number;
+	constructor(private readonly kind: ProviderKind, readonly modelName: string, private readonly baseUrl: string, private readonly apiKey: string, private readonly settings: RiafSettings) {
+		const name = kind === 'openai' || kind === 'openaiCompatible' ? 'openAI' : kind;
+		this.providerName = name === 'openAI' && kind === 'openaiCompatible' ? 'openAICompatible' : name;
+		this.id = `${kind}:${modelName}`;
+		const caps = getModelCapabilities(this.providerName, modelName, undefined);
+		this.contextWindow = caps.contextWindow ?? 128_000;
+		this.maxOutputTokens = caps.reservedOutputTokenSpace ?? 8_192;
+	}
+	async call(req: TransportRequest): Promise<TransportResult> {
+		const messages: ProviderMessage[] = req.messages.map(message => {
+			if (message.role === 'tool') { return { role: 'tool', text: message.text, toolCallId: message.toolCallId, name: message.name }; }
+			if (message.role === 'assistant') { return { role: 'assistant', text: message.text, toolCalls: message.toolCalls }; }
+			return { role: 'user', text: message.text };
+		});
+		const built = buildProviderRequest({
+			kind: this.kind, model: this.modelName, url: this.baseUrl, apiKey: this.apiKey,
+			system: [req.systemMessage, req.volatileSystemMessage ?? ''].filter(Boolean).join('\n\n'),
+			messages, tools: req.tools, maxOutputTokens: req.maxOutputTokens ?? this.maxOutputTokens,
+			reasoning: { enabled: this.settings.providers.reasoningEnabled, budget: this.settings.providers.reasoningBudget, effort: this.settings.providers.reasoningEffort },
+			overrides: this.settings.providers.overrides,
+		});
+		const doFetch = await outboundFetch();
+		const res = await doFetch(built.url, { method: 'POST', headers: built.headers, body: JSON.stringify(built.body), signal: req.signal });
+		if (!res.ok) { throw new Error(`${this.kind} ${res.status}: ${(await res.text()).slice(0, 500)}`); }
+		const parsed = parseProviderResponse(this.kind, await res.json());
+		if (parsed.text) { req.onText?.(parsed.text); }
+		return {
+			text: parsed.text, toolCalls: parsed.toolCalls, stopReason: parsed.stopReason,
+			usage: { inputTokens: parsed.inputTokens ?? 0, outputTokens: parsed.outputTokens ?? 0, cacheReadTokens: parsed.cacheReadTokens ?? 0 },
+		};
+	}
+}
+
+function nativeSelection(s: RiafSettings, modelOverride?: string): { kind: ProviderKind; model: string; url: string } | undefined {
+	const active = s.providers.active;
+	if (!active || active === 'gateway') { return undefined; }
+	const configured = active === 'anthropic' ? s.providers.anthropicModel : active === 'openai' ? s.providers.openaiModel : active === 'gemini' ? s.providers.geminiModel : active === 'ollama' ? s.providers.ollamaModel : s.providers.compatibleModel;
+	const model = modelOverride || configured;
+	if (!model) { return undefined; }
+	const url = active === 'ollama' ? s.providers.ollamaUrl : active === 'openaiCompatible' ? s.providers.compatibleUrl : '';
+	return { kind: active, model, url };
+}
+
+/** Pick the transport from settings: a native provider, else the gateway, else whatever vscode.lm offers.
+ *  `modelOverride` (a per-purpose model id) wins over the provider model, `riaf.models.main`, and `riaf.gateway.model`. */
+export async function createTransport(preferred?: vscode.LanguageModelChat, modelOverride?: string): Promise<ModelTransport | undefined> {
 	const s = readSettings();
-	if (s.gateway.url && s.gateway.model) { return new GatewayTransport(s); }
+	const native = nativeSelection(s, modelOverride);
+	if (native) {
+		const key = native.kind === 'ollama' ? '' : (await providerSecret(PROVIDER_SECRET[native.kind])) ?? '';
+		if (native.kind !== 'ollama' && native.kind !== 'openaiCompatible' && !key) { return undefined; }
+		return new NativeProviderTransport(native.kind, native.model, native.url, key, s);
+	}
+	const model = modelOverride || s.models.main || s.gateway.model;
+	if (s.gateway.url && model) { return new GatewayTransport({ ...s, gateway: { ...s.gateway, model } }); }
 	return VscodeLmTransport.create(preferred);
 }
