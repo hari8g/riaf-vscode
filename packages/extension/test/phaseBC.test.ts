@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { callMcpTool, discoverMcpTools, mcpResultText } from '../src/mcpClient.js';
 import { loadMcpServers, parseMcpConfig, prefixMcpTool, transportsToTry } from '../src/mcpConfig.js';
@@ -66,7 +67,9 @@ describe('MCP config and terminal heuristics', () => {
 		const modules = join(__dirname, '../../../node_modules');
 		const sdk = join(modules, '@modelcontextprotocol/sdk/dist/esm');
 		const serverFile = join(root, 'echo.mjs');
-		writeFileSync(serverFile, `import { z } from ${JSON.stringify(join(modules, 'zod/index.js'))};\nimport { McpServer } from ${JSON.stringify(join(sdk, 'server/mcp.js'))};\nimport { StdioServerTransport } from ${JSON.stringify(join(sdk, 'server/stdio.js'))};\nconst server = new McpServer({ name: 'echo', version: '0.0.1' });\nserver.tool('echo', 'echo text', { text: z.string() }, async ({ text }) => ({ content: [{ type: 'text', text }] }));\nawait server.connect(new StdioServerTransport());\n`);
+		// ESM specifiers must be file:// URLs — a bare C:\ path is an unknown URL scheme on Windows
+		const spec = (p: string) => JSON.stringify(pathToFileURL(p).href);
+		writeFileSync(serverFile, `import { z } from ${spec(join(modules, 'zod/index.js'))};\nimport { McpServer } from ${spec(join(sdk, 'server/mcp.js'))};\nimport { StdioServerTransport } from ${spec(join(sdk, 'server/stdio.js'))};\nconst server = new McpServer({ name: 'echo', version: '0.0.1' });\nserver.tool('echo', 'echo text', { text: z.string() }, async ({ text }) => ({ content: [{ type: 'text', text }] }));\nawait server.connect(new StdioServerTransport());\n`);
 		writeFileSync(join(root, '.mcp.json'), JSON.stringify({ mcpServers: { echo: { command: process.execPath, args: [serverFile] } } }));
 		const found = await discoverMcpTools(root, [], 8_000, home);
 		expect([...found.errors.entries()]).toEqual([]);
