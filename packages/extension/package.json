@@ -1,7 +1,7 @@
 {
   "name": "riaf-vscode",
   "displayName": "RIAF — Repository Intelligence & Agent Loop",
-  "description": "Semantic repository indexing (BM25 + embeddings, context graph) exposed as Copilot tools, an @riaf read-edit-test agent, and an MCP server for Claude Code. Fully offline-capable; corporate-proxy friendly.",
+  "description": "Repository intelligence for Copilot Chat, Claude Code and the editor: semantic index + context graph as 27 #riaf tools, the @riaf plan→execute→verify agent with a persisted run ledger, an MCP server for Claude Code, native Anthropic/OpenAI/Gemini/Ollama or SSO-gateway models, and a proxy bridge for corporate networks. Offline by default.",
   "version": "0.1.0",
   "publisher": "bosch-mps",
   "private": true,
@@ -17,12 +17,19 @@
     "Other"
   ],
   "keywords": [
+    "agent",
     "ai",
-    "copilot",
     "chat-participant",
+    "claude-code",
+    "code-search",
+    "copilot",
+    "enterprise",
     "language-model-tools",
     "mcp",
-    "repository-intelligence"
+    "proxy",
+    "repository-intelligence",
+    "semantic-search",
+    "sso"
   ],
   "main": "./dist/extension.js",
   "icon": "media/icon.png",
@@ -1159,7 +1166,9 @@
           "type": "array",
           "default": [],
           "description": "MCP server names hidden from @riaf and the MCP settings tab toggle.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "riaf.security.extraRules": {
           "type": "array",
