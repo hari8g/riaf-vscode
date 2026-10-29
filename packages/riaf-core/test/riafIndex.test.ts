@@ -33,7 +33,7 @@ describe('RiafIndex end-to-end on the sample repo', () => {
 
 	afterAll(async () => {
 		await index.close();
-		rmSync(dir, { recursive: true, force: true });
+		rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 	});
 
 	it('reports progress across the pipeline phases', () => {
@@ -248,7 +248,7 @@ describe('RiafIndex summaries and embeddings hooks', () => {
 			expect(ctx.profileText).toContain('Purpose: Order management sample.');
 		} finally {
 			await index.close();
-			rmSync(dir, { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 		}
 	});
 
@@ -298,7 +298,7 @@ describe('RiafIndex summaries and embeddings hooks', () => {
 		} finally {
 			globalThis.fetch = originalFetch;
 			await index.close();
-			rmSync(dir, { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 		}
 	});
 });

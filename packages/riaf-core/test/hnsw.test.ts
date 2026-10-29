@@ -90,7 +90,7 @@ describe('HnswIndex', () => {
 
 describe('RiafIndex embeddings: cache + full-chunk text', () => {
 	const dirs: string[] = [];
-	afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+	afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
 	const toyEmbed = (text: string): number[] => {
 		const v = new Array(26).fill(0);
 		for (const ch of text.toLowerCase()) { const i = ch.charCodeAt(0) - 97; if (i >= 0 && i < 26) v[i] += 1; }

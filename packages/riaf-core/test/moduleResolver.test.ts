@@ -10,7 +10,7 @@ import { extractImports } from '../src/universalImportExtractor.js';
 import { RiafIndex } from '../src/riafIndex.js';
 
 const dirs: string[] = [];
-afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
 
 function makeRepo(files: Record<string, string>): string {
 	const root = mkdtempSync(join(tmpdir(), 'riaf-resolve-'));

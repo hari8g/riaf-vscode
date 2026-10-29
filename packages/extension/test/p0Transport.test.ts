@@ -128,7 +128,7 @@ describe('org-index and git tools', () => {
 			expect((badKind as any).result).toMatch(/kind must be one of/);
 		} finally {
 			await index.close();
-			rmSync(dir, { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 		}
 	});
 
@@ -148,7 +148,7 @@ describe('org-index and git tools', () => {
 			expect((empty as any).result).toMatch(/non-empty/);
 		} finally {
 			await index.close();
-			rmSync(dir, { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 		}
 	});
 
@@ -160,7 +160,7 @@ describe('org-index and git tools', () => {
 			expect((r as any).result).toMatch(/Not a git repository/);
 		} finally {
 			await index.close();
-			rmSync(dir, { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 		}
 	});
 });

@@ -20,7 +20,7 @@ const freshRepo = (): string => {
 	cpSync(FIXTURE, root, { recursive: true });
 	return root;
 };
-afterEach(() => { for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+afterEach(() => { for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
 
 const lastPhase = (progress: IndexProgress[], phase: string) => progress.filter(p => p.phase === phase).at(-1);
 

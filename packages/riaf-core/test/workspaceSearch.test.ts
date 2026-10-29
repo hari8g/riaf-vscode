@@ -25,7 +25,7 @@ beforeAll(() => {
 	writeFileSync(join(root, 'binary.bin'), Buffer.from([0x63, 0x61, 0x70, 0x74, 0x75, 0x72, 0x65, 0x00, 0x50, 0x61, 0x79]));
 	writeFileSync(join(root, 'notes.md'), 'Capture Payment flow\n\ncapturePayment(id) is called by the controller.\n');
 });
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
 
 const rgAvailable = !!findRipgrep();
 

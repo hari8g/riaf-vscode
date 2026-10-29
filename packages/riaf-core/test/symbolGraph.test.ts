@@ -267,7 +267,7 @@ describe('universalGraphAnalyzer: depth', () => {
 
 describe('RiafIndex: symbol graph end to end', () => {
 	const dirs: string[] = [];
-	afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+	afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
 
 	it('answers find_references / neighbourhood for the sample repo and keeps them fresh on incremental edits', async () => {
 		const dir = mkdtempSync(join(tmpdir(), 'riaf-symgraph-'));

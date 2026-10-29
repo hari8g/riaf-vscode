@@ -18,7 +18,7 @@ import { readSettings } from '../src/config.js';
 const SAMPLE_REPO = join(__dirname, '..', '..', 'riaf-core', 'test', 'fixtures', 'sample-repo');
 
 const dirs: string[] = [];
-afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); (vscode.commands as any).executeCommand = async () => undefined; });
+afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); (vscode.commands as any).executeCommand = async () => undefined; });
 
 async function sampleIndex() {
 	const root = mkdtempSync(join(tmpdir(), 'riaf-p2-'));

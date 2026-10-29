@@ -56,7 +56,7 @@ describe('RepoIntelligenceDb (sqlite-wasm driver)', () => {
 
 	afterAll(async () => {
 		await db.close();
-		rmSync(dir, { recursive: true, force: true });
+		rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 	});
 
 	it('supports FTS5 + bm25 and ranks the best match first', async () => {
@@ -148,7 +148,7 @@ describe('RepoIntelligenceDb (sqlite-wasm driver)', () => {
 		await new Promise(r => setTimeout(r, 120));
 		expect(existsSync(freshPath)).toBe(true);
 		await auto.close();
-		rmSync(freshDir, { recursive: true, force: true });
+		rmSync(freshDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 	});
 
 	it('never touches disk for in-memory databases', async () => {

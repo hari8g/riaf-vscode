@@ -23,7 +23,7 @@ export const workspace = {
 	fs: {
 		readFile: async (u: Uri) => new Uint8Array(readFileSync(u.fsPath)), writeFile: async (u: Uri, b: Uint8Array) => writeFileSync(u.fsPath, b),
 		readDirectory: async (u: Uri) => readdirSync(u.fsPath).map(n => [n, statSync(u.fsPath + '/' + n).isDirectory() ? 2 : 1]),
-		stat: async (u: Uri) => statSync(u.fsPath), createDirectory: async (u: Uri) => mkdirSync(u.fsPath, { recursive: true }), delete: async (u: Uri) => rmSync(u.fsPath, { recursive: true, force: true }),
+		stat: async (u: Uri) => statSync(u.fsPath), createDirectory: async (u: Uri) => mkdirSync(u.fsPath, { recursive: true }), delete: async (u: Uri) => rmSync(u.fsPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
 	},
 	textDocuments: [] as unknown[], getConfiguration: () => ({ get: (k: string, d: unknown) => configStore.has(k) ? configStore.get(k) : d, update: async (k: string, v: unknown) => { configStore.set(k, v); } }), getWorkspaceFolder: () => undefined, workspaceFolders: [],
 	applyEdit: async (e: WorkspaceEdit) => { for (const op of e.ops) { writeFileSync(op.uri.fsPath, op.text); } return true; },
