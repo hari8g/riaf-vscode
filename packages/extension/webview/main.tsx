@@ -349,6 +349,28 @@ function Usage({ usage, transportId, call }: { usage?: HostResponse['usage']; tr
 				</>
 			) : <div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>No Claude Code transcripts found for this folder yet (looked under ~/.claude/projects). Run <code>claude</code> in this repo once, or turn on <code>riaf.usage.readClaudeCodeTranscripts</code>.</div>}
 
+			<h3 style={{ fontSize: 14, fontWeight: 600, margin: '14px 0 2px' }}>RIAF effect inside Claude Code</h3>
+			<div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>Sessions in this repo that used <code>riaf</code> tools versus sessions that did not, from the same transcripts. "Prompt tokens" = input + cache read + cache write per model call.</div>
+			{cc?.riafEffect && (cc.riafEffect.with.calls > 0 || cc.riafEffect.without.calls > 0) ? (() => {
+				const e = cc.riafEffect; const pctStr = (p?: number) => p === undefined ? '—' : `${p >= 0 ? '−' : '+'}${Math.abs(Math.round(100 * p))}%`;
+				const sign = (p?: number) => p === undefined ? undefined : p >= 0;
+				return (
+					<>
+						<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+							<StatCard label="Sessions" value={`${e.with.sessions} with · ${e.without.sessions} without`} sub={`${e.with.calls} vs ${e.without.calls} model calls`} />
+							<StatCard label="Prompt tokens / call" value={`${fmtTokens(Math.round(e.with.avgPromptPerCall))} vs ${fmtTokens(Math.round(e.without.avgPromptPerCall))}`} sub={`with RIAF: ${pctStr(e.promptPerCallSavedPct)}`} />
+							<StatCard label="Output tokens / call" value={`${fmtTokens(Math.round(e.with.avgOutputPerCall))} vs ${fmtTokens(Math.round(e.without.avgOutputPerCall))}`} sub={`with RIAF: ${pctStr(e.outputPerCallSavedPct)}`} />
+							<StatCard label="File reads / turn" value={`${e.with.avgReadsPerTurn.toFixed(1)} vs ${e.without.avgReadsPerTurn.toFixed(1)}`} sub={`Read/Grep/Glob · with RIAF: ${pctStr(e.readsPerTurnSavedPct)}`} />
+							<StatCard label="Saved by RIAF results" value={fmtTokens(e.directSavedTokens)} sub={`${Math.round(100 * e.directSavedPct)}% of with-RIAF prompt tokens · ${e.with.riafCalls} riaf calls`} />
+						</div>
+						{Object.keys(e.byTool).length > 0 && <div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>{Object.entries(e.byTool).sort((a, b) => b[1].calls - a[1].calls).map(([t, r]) => `${t} ×${r.calls} (~${fmtTokens(r.savedTokens)} saved)`).join(' · ')}</div>}
+						{(e.with.calls === 0 || e.without.calls === 0) && <Note kind="warn">{e.with.calls === 0 ? 'No session has used riaf tools yet — the comparison needs at least one.' : 'Every session used RIAF — there is no "without" baseline yet; the direct estimate above still applies.'}</Note>}
+						{sign(e.promptPerCallSavedPct) === false && <Note kind="warn">Prompt tokens per call are higher in RIAF sessions. That usually means those sessions were bigger tasks; the direct estimate is the fairer number.</Note>}
+					</>
+				);
+			})() : <div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>Needs Claude Code transcripts for this repo.</div>}
+			<Note>The with/without comparison is observational — sessions differ in task size — so treat percentages as indicative. "Saved by RIAF results" is the same conservative estimate as "Tools served": whole-file size minus what RIAF returned, for search / outline / symbol results.</Note>
+
 			<div style={{ display: 'flex', gap: 8 }}>
 				<Button small onClick={() => call({ type: 'refreshUsage' })}>Refresh</Button>
 				<Button kind="danger" small onClick={() => call({ type: 'resetUsage' })}>Reset RIAF counters</Button>

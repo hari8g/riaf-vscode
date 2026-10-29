@@ -1,6 +1,7 @@
 # Changelog
 
 ## 0.2.0
+- Usage tab: "RIAF effect inside Claude Code" — with-vs-without-RIAF comparison from transcripts (prompt/output tokens per call, reads per turn, % saved) and a direct per-tool savings estimate.
 - Claude Code setup writes a version-independent launcher (`.riaf/riaf-mcp.mjs`) and points `.mcp.json` at it; the panel and Doctor flag a stale `.mcp.json` from an older install.
 - Version bump so the new icon and README replace the cached 0.1.0 install cleanly.
 

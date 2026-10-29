@@ -142,6 +142,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 				const t = u.tools; const cc = u.claudeCode;
 				lines.push(`- usage (RIAF's own calls): ${u.allTime.calls} calls all-time, ${u.allTime.inputTokens.toLocaleString()} in / ${u.allTime.outputTokens.toLocaleString()} out, ${u.allTime.savedTokens.toLocaleString()} saved`);
 				lines.push(`- tools served: ${t && t.total.calls ? Object.entries(t.byConsumer).map(([c, r]) => `${c} ${r.calls} calls (~${r.savedTokensEst.toLocaleString()} tokens saved est.)`).join(' · ') : 'none yet for this repo'}`);
+				if (cc?.riafEffect && (cc.riafEffect.with.calls || cc.riafEffect.without.calls)) {
+					const e = cc.riafEffect; const p = (x?: number) => x === undefined ? 'n/a' : `${Math.round(100 * x)}%`;
+					lines.push(`- RIAF effect in Claude Code: ${e.with.sessions} sessions with / ${e.without.sessions} without · prompt tokens per call ${Math.round(e.with.avgPromptPerCall)} vs ${Math.round(e.without.avgPromptPerCall)} (saved ${p(e.promptPerCallSavedPct)}) · output per call saved ${p(e.outputPerCallSavedPct)} · reads per turn saved ${p(e.readsPerTurnSavedPct)} · direct estimate ${e.directSavedTokens.toLocaleString()} tokens (${Math.round(100 * e.directSavedPct)}%)`);
+				}
 				lines.push(`- Claude Code transcripts: ${cc?.projectDir ? `${cc.projectDir} — ${cc.calls} calls, ${cc.sessions} sessions, cache efficiency ${Math.round(100 * cc.cacheEfficiency)}%, est. $${cc.costUSD.toFixed(2)}${cc.unpricedModels.length ? ` (no price for ${cc.unpricedModels.join(', ')})` : ''}` : readSettings().usage.readClaudeCodeTranscripts ? 'none found for this folder under ~/.claude/projects' : 'disabled (riaf.usage.readClaudeCodeTranscripts)'}`);
 			}
 			lines.push(`- embeddings: ${s.embeddings.enabled ? `on (${s.embeddings.model})` : 'off (BM25-only, offline)'}`);
