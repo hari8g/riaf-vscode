@@ -364,7 +364,7 @@ function ClaudeCode({ status, bridge, call, get, set }: P & { status?: HostRespo
 	return (
 		<Section id="claude" title="Claude Code" desc="Developers using Claude Code get the same index through a local MCP server plus /riaf-plan, /riaf-verify and /riaf-context commands. Setup also writes the corporate proxy for Claude Code itself.">
 			<div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-				<Badge ok={status?.mcpJson} text={status?.mcpJson ? '.mcp.json has the riaf server' : '.mcp.json not set up'} />
+				<Badge ok={status?.mcpJson && !status?.mcpStale} warn={!!status?.mcpStale} text={status?.mcpJson ? (status.mcpStale ? `.mcp.json ${status.mcpStale} — run setup again` : '.mcp.json has the riaf server (version-independent launcher)') : '.mcp.json not set up'} />
 				<Badge ok={status?.commands} text={status?.commands ? '.claude/commands installed' : '.claude/commands missing'} />
 				<Badge ok={status?.rules} text={status?.rules ? 'CLAUDE.md carries RIAF rules' : 'CLAUDE.md rules missing'} />
 			</div>

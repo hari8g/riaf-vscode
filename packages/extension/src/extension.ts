@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { registerChatParticipant } from './chatParticipant.js';
-import { setProxyCredentials, setupClaudeCode } from './claudeCodeSetup.js';
+import { mcpJsonStatus, setProxyCredentials, setupClaudeCode } from './claudeCodeSetup.js';
 import { ProxyBridgeManager } from './proxyBridgeManager.js';
 import { readSettings, usesGateway } from './config.js';
 import { IndexManager } from './indexManager.js';
@@ -160,6 +160,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 			{
 				const n = await claudeCodeNetworkStatus(ctx);
 				if (n.proxyError) { lines.push(`- ⚠ ${n.proxyError}`); }
+				if (f) { const st = mcpJsonStatus(f.uri.fsPath, ctx.extensionPath); lines.push(`- Claude Code .mcp.json: ${st.present ? (st.stale ? `⚠ ${st.stale} — run "RIAF: Set up Claude Code"` : `OK (${st.entry})`) : 'not set up'}`); }
 				lines.push(`- Claude Code network (${n.settingsPath}): proxy=${n.writtenProxy || '(not written)'}${n.writtenProxy ? (n.writtenHasCredentials ? ' (with credentials)' : ' (no credentials)') : ''} · CA=${n.writtenCa || '(none)'}`);
 				{
 					const b = bridge.status();

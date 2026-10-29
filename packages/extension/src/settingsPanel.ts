@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { PROXY_SECRET_USER, setProxyCredentials, setupClaudeCode } from './claudeCodeSetup.js';
+import { PROXY_SECRET_USER, mcpJsonStatus, setProxyCredentials, setupClaudeCode } from './claudeCodeSetup.js';
 import { claudeUserSettingsPath, detectCaCert, detectProxy, nodeNeedsExplicitCa, readClaudeUserSettingsEnv, redactProxyUrl, splitProxyCredentials } from './claudeCodeNetwork.js';
 import { findRuleFiles } from './projectRules.js';
 import { probeOllama } from './providerHttp.js';
@@ -67,10 +67,10 @@ async function statusBlock(d: PanelDeps): Promise<HostResponse> {
 		out.rules = await readRules(folder);
 		out.rulesPath = RULES_FILENAME;
 		const root = folder.uri.fsPath;
-		let mcpJson = false;
-		try { mcpJson = Boolean(JSON.parse(readFileSync(join(root, '.mcp.json'), 'utf8')).mcpServers?.riaf); } catch { /* absent */ }
+		const mcpSt = mcpJsonStatus(root, d.ctx.extensionPath);
+		const mcpJson = mcpSt.present; const mcpStale = mcpSt.stale;
 		out.claudeCode = {
-			mcpJson, commands: existsSync(join(root, '.claude', 'commands', 'riaf-plan.md')),
+			mcpJson, mcpStale, commands: existsSync(join(root, '.claude', 'commands', 'riaf-plan.md')),
 			rules: existsSync(join(root, 'CLAUDE.md')) && readFileSync(join(root, 'CLAUDE.md'), 'utf8').includes('<!-- riaf:rules -->'),
 			mcpEntry: join(d.ctx.extensionPath, 'dist', 'mcp.mjs'),
 			network: await claudeCodeNetworkStatus(d.ctx),

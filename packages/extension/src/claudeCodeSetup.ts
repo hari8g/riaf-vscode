@@ -64,6 +64,21 @@ export async function setProxyCredentials(ctx: vscode.ExtensionContext): Promise
  */
 import type { ProxyBridgeManager } from './proxyBridgeManager.js';
 
+/** Is <root>/.mcp.json set up for RIAF, and does it still point somewhere valid? (pure: used by the panel, Doctor and tests) */
+export function mcpJsonStatus(root: string, extensionPath: string): { present: boolean; stale?: string; entry?: string } {
+	try {
+		const riafSrv = JSON.parse(readFileSync(join(root, '.mcp.json'), 'utf8')).mcpServers?.riaf as { args?: string[] } | undefined;
+		if (!riafSrv) { return { present: false }; }
+		const entry = riafSrv.args?.[0];
+		if (!entry) { return { present: true, stale: 'has no server path' }; }
+		if (!existsSync(entry)) { return { present: true, entry, stale: `server path no longer exists (${entry})` }; }
+		if (/riaf-vscode-\d/.test(entry)) {
+			return { present: true, entry, stale: entry.startsWith(extensionPath) ? 'points at a versioned extension folder; re-run setup to use the version-independent launcher' : `points at an older extension version (${entry})` };
+		}
+		return { present: true, entry };
+	} catch { return { present: false }; }
+}
+
 export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: IndexManager, bridgeMgr?: ProxyBridgeManager): Promise<void> {
 	const folder = indexes.folderFor(vscode.window.activeTextEditor?.document.uri);
 	if (!folder) { vscode.window.showErrorMessage('RIAF: open a workspace folder first.'); return; }
@@ -71,7 +86,12 @@ export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: Ind
 	const mcpEntry = join(ctx.extensionPath, 'dist', 'mcp.mjs');
 	if (!existsSync(mcpEntry)) { vscode.window.showErrorMessage(`RIAF: MCP server bundle missing at ${mcpEntry}`); return; }
 
-	// 1. .mcp.json (project-scoped; Claude Code reads it automatically)
+	// 1. .mcp.json (project-scoped; Claude Code reads it automatically). It points at a small
+	//    launcher inside the repo that finds the newest installed RIAF at run time, so upgrading
+	//    the extension (whose folder name carries the version) never breaks Claude Code.
+	const launcher = join(root, '.riaf', 'riaf-mcp.mjs');
+	mkdirSync(join(root, '.riaf'), { recursive: true });
+	writeFileSync(launcher, readFileSync(join(ctx.extensionPath, 'plugin', 'riaf-mcp.mjs'), 'utf8'));
 	const mcpPath = join(root, '.mcp.json');
 	let mcp: { mcpServers?: Record<string, unknown> } = {};
 	if (existsSync(mcpPath)) { try { mcp = JSON.parse(readFileSync(mcpPath, 'utf8')); } catch { /* overwrite malformed */ } }
@@ -79,7 +99,7 @@ export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: Ind
 		...(mcp.mcpServers ?? {}),
 		riaf: {
 			command: 'node',
-			args: [mcpEntry, '--workspace', root, '--db', indexes.dbPathFor(folder)],
+			args: [launcher, '--workspace', root, '--db', indexes.dbPathFor(folder)],
 			env: {},
 		},
 	};

@@ -173,7 +173,7 @@ The agent's tool set (38): the 27 above plus `edit_file` (search/replace blocks,
 
 Claude Code keeps its own agent loop; RIAF feeds it the index, the ledger discipline, and safety gates. **Once per repository:** `RIAF: Set up Claude Code (MCP + plugin)`. It writes, inside the repo:
 
-- `.mcp.json` — a `riaf` stdio MCP server sharing the extension's index;
+- `.mcp.json` — a `riaf` stdio MCP server sharing the extension's index, started through `.riaf/riaf-mcp.mjs`, a tiny launcher that finds the newest installed RIAF at run time — so upgrading the extension never breaks Claude Code (if you set up with a version before 0.2.0, run setup once more);
 - `.claude/commands/` — `riaf-run`, `riaf-status`, `riaf-resume`, `riaf-plan`, `riaf-verify`, `riaf-context`;
 - `.claude/hooks/gate.mjs` — a **Stop** hook that refuses to end while the latest run isn't `done`, and a **PreToolUse** guard for heredocs and the built-in deny list;
 - `CLAUDE.md` — a `<!-- riaf:rules -->` block with the token-discipline rules (search first, read once, combined edits, verify once);
@@ -343,6 +343,8 @@ RIAF search instead of blind reads · duplicate-read suppression across turns ·
 | `claude`: *ERR_SOCKET_CLOSED* / proxy 407 | Wrong proxy host or credentials — curl-test with `-x <proxy> -U user:pass`; pin the working proxy; use the bridge and read its log |
 | Gateway 401/403 | Wrong SSO scope; or `auth: header` + `riaf.gateway.headers` |
 | Gateway returns, nothing streams | `riaf.gateway.stream: false` |
+| Settings panel says *unknown request …* right after an upgrade | The panel is the new build but the extension host is still the old one — *Developer: Reload Window* |
+| Claude Code's `riaf` server stopped after upgrading RIAF, or *Tools served* stays at 0 | `.mcp.json` pointed at the old versioned folder. Run **RIAF: Set up Claude Code** once; from now on it uses the version-independent launcher. Doctor and the Claude Code tab flag a stale `.mcp.json` |
 | Usage shows zeros although I use RIAF in Claude Code / Copilot | Expected for the top two blocks: they count calls RIAF makes itself. Look at **Tools served** and **Claude Code · this repo** lower on the same tab (needs `riaf.usage.readClaudeCodeTranscripts`, default on). Doctor prints the transcript folder it found |
 | Hook seems ignored | Hooks match tool names (preTool) / paths (postEdit) by regex; a hook that fails to launch now blocks and says why |
 
@@ -354,7 +356,7 @@ RIAF search instead of blind reads · duplicate-read suppression across turns ·
 | `.riaf/runs/*.json` | Run ledgers (`/run`, `/status`, `/resume`, Claude Code `plan_*`) |
 | `.riaf/notes/*.md`, `.riaf/interactions.json` | Notepads; interaction history used to boost search ranking |
 | `.riafrules`, `.riaf/hooks.json`, `.riaf/rules/` | Project rules and hooks (yours) |
-| `.mcp.json`, `.claude/commands/`, `.claude/hooks/gate.mjs`, `CLAUDE.md` block | Claude Code setup (commit these) |
+| `.mcp.json`, `.riaf/riaf-mcp.mjs`, `.claude/commands/`, `.claude/hooks/gate.mjs`, `CLAUDE.md` block | Claude Code setup (commit these) |
 | `<folder>_context.md` | Context Document |
 | `~/.riaf/memory.md` | User memory |
 | `~/.claude/settings.json` (`env` block) | Proxy/CA for Claude Code |

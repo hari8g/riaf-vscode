@@ -1,6 +1,7 @@
 # Changelog
 
 ## 0.2.0
+- Claude Code setup writes a version-independent launcher (`.riaf/riaf-mcp.mjs`) and points `.mcp.json` at it; the panel and Doctor flag a stale `.mcp.json` from an older install.
 - Version bump so the new icon and README replace the cached 0.1.0 install cleanly.
 
 ## 0.1.0
