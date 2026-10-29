@@ -62,7 +62,7 @@ RIAF ships as a single `riaf-vscode-<version>.vsix` file (about 800 KB).
 **Option C — terminal**
 
 ```sh
-code --install-extension riaf-vscode-0.1.0.vsix
+code --install-extension riaf-vscode-0.2.0.vsix
 ```
 (If `code` isn't found: Command Palette → *Shell Command: Install 'code' command in PATH*.)
 
@@ -427,8 +427,8 @@ cd riaf-vscode
 npm install                 # Node ≥ 20; links the three workspace packages
 npm run typecheck           # tsc across riaf-core, token-opt, extension, webview
 npm test                    # builds the libraries, then 260+ tests
-npm run package             # production bundle → riaf-vscode-0.1.0.vsix at the repo root
-code --install-extension riaf-vscode-0.1.0.vsix
+npm run package             # production bundle → riaf-vscode-0.2.0.vsix at the repo root
+code --install-extension riaf-vscode-0.2.0.vsix
 ```
 
 Developing: open the repo in VS Code, `npm run watch -w packages/extension` in a terminal, press **F5** to launch an *Extension Development Host* window, open a repo there. `Ctrl+R` in that window reloads after a rebuild.

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.0
+- Version bump so the new icon and README replace the cached 0.1.0 install cleanly.
+
 ## 0.1.0
 - MPS logo as the extension icon (Extensions view, marketplace card, @riaf chat avatar, settings tab).
 - Usage tab: "Tools served" counters for Copilot and Claude Code (calls per tool, tokens returned, estimated tokens saved vs whole-file reads) and "Claude Code · this repo" real usage (calls, tokens, cache efficiency, cost) read from Claude Code's transcripts; Doctor reports both; `riaf.usage.readClaudeCodeTranscripts`.

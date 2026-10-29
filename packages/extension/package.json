@@ -2,7 +2,7 @@
   "name": "riaf-vscode",
   "displayName": "RIAF — Repository Intelligence & Agent Loop",
   "description": "Repository intelligence for Copilot Chat, Claude Code and the editor: semantic index + context graph as 27 #riaf tools, the @riaf plan→execute→verify agent with a persisted run ledger, an MCP server for Claude Code, native Anthropic/OpenAI/Gemini/Ollama or SSO-gateway models, and a proxy bridge for corporate networks. Offline by default.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "bosch-mps",
   "private": true,
   "license": "MIT",
