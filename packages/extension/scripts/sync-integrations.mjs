@@ -72,9 +72,11 @@ for (const adapter of mod.allAdapters()) {
 }
 pkg.contributes.languageModelTools = kept;
 
-const next = JSON.stringify(pkg, null, 2) + '\n';
+// Compare and write EOL-agnostically: git on Windows may check package.json out with CRLF.
+const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+const next = (JSON.stringify(pkg, null, 2) + '\n').replace(/\n/g, eol);
 if (check) {
-	if (next !== raw) { console.error('package.json is out of step with src/integrations — run: node scripts/sync-integrations.mjs'); process.exit(1); }
+	if (next.replace(/\r\n/g, '\n') !== raw.replace(/\r\n/g, '\n')) { console.error('package.json is out of step with src/integrations — run: node scripts/sync-integrations.mjs'); process.exit(1); }
 	console.log('package.json integrations in sync');
 } else {
 	writeFileSync(pkgPath, next);
