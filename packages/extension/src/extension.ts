@@ -12,7 +12,7 @@ import { setOutboundProxy } from './proxiedFetch.js';
 import { installSqliteLoader } from './sqliteLoader.js';
 import { decorateGraph } from '@bosch-mps/riaf-engine';
 import { buildContextMarkdown } from './contextDoc.js';
-import { claudeCodeNetworkStatus, openSettingsPanel, SETTING_KEYS, snapshotSettings } from './settingsPanel.js';
+import { SETTING_KEYS, claudeCodeNetworkStatus, openSettingsPanel, snapshotSettings, usageBlock } from './settingsPanel.js';
 import { registerProposalProvider } from './tools/editApproval.js';
 import { resolveShell } from './tools/shell.js';
 import { UsageMeter } from './usage.js';
@@ -137,6 +137,13 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 				try { const st = (await indexes!.get(f)).getStatus(); lines.push(`- index: ${st.indexed ? 'OK' : 'NOT INDEXED'} — ${st.files} files, ${st.chunks} chunks, ${st.symbols} symbols`, `- db: ${indexes!.dbPathFor(f)}`); }
 				catch (e) { lines.push(`- index: FAILED — ${(e as Error).message}`); }
 			} else { lines.push('- index: no folder open'); }
+			{
+				const u = usageBlock({ ctx, indexes: indexes!, usage, transport: getTransport, bridge });
+				const t = u.tools; const cc = u.claudeCode;
+				lines.push(`- usage (RIAF's own calls): ${u.allTime.calls} calls all-time, ${u.allTime.inputTokens.toLocaleString()} in / ${u.allTime.outputTokens.toLocaleString()} out, ${u.allTime.savedTokens.toLocaleString()} saved`);
+				lines.push(`- tools served: ${t && t.total.calls ? Object.entries(t.byConsumer).map(([c, r]) => `${c} ${r.calls} calls (~${r.savedTokensEst.toLocaleString()} tokens saved est.)`).join(' · ') : 'none yet for this repo'}`);
+				lines.push(`- Claude Code transcripts: ${cc?.projectDir ? `${cc.projectDir} — ${cc.calls} calls, ${cc.sessions} sessions, cache efficiency ${Math.round(100 * cc.cacheEfficiency)}%, est. $${cc.costUSD.toFixed(2)}${cc.unpricedModels.length ? ` (no price for ${cc.unpricedModels.join(', ')})` : ''}` : readSettings().usage.readClaudeCodeTranscripts ? 'none found for this folder under ~/.claude/projects' : 'disabled (riaf.usage.readClaudeCodeTranscripts)'}`);
+			}
 			lines.push(`- embeddings: ${s.embeddings.enabled ? `on (${s.embeddings.model})` : 'off (BM25-only, offline)'}`);
 			if (usesGateway(s)) {
 				try {

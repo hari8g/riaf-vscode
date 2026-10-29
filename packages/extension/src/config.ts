@@ -9,6 +9,7 @@ export interface RiafSettings {
 		url: string; model: string; auth: GatewayAuth; ssoScopes: string[];
 		headers: Record<string, string>; promptCache: boolean; stream: boolean;
 	};
+	usage: { readClaudeCodeTranscripts: boolean };
 	claudeCode: { writeUserSettings: boolean; proxyUrl: string; noProxy: string[]; caCertPath: string; proxyBridge: boolean; proxyBridgePort: number };
 	models: { main: string; plan: string; summary: string; explore: string; critic: string; commit: string; autocomplete: string };
 	general: { aiInstructions: string; disableSystemPrompt: boolean; metricsOptOut: boolean };
@@ -76,6 +77,7 @@ export function readSettings(): RiafSettings {
 			promptCache: c.get('gateway.promptCache', true),
 			stream: c.get('gateway.stream', true),
 		},
+		usage: { readClaudeCodeTranscripts: c.get('usage.readClaudeCodeTranscripts', true) },
 		claudeCode: {
 			writeUserSettings: c.get('claudeCode.writeUserSettings', true),
 			proxyUrl: c.get('claudeCode.proxyUrl', ''),

@@ -2,6 +2,10 @@
 export type SettingsSnapshot = Record<string, unknown>;
 export type IndexStatus = { indexed: boolean; files: number; chunks: number; symbols: number; lastIndexedAt?: number; dbPath?: string; folder?: string; embeddings: boolean };
 export type UsageTotals = { calls: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUSD: number; savedTokens: number };
+export type ToolCounters = { calls: number; charsReturned: number; savedTokensEst: number; errors: number; lastAt?: number };
+export type ToolsServed = { byConsumer: Record<string, { calls: number; charsReturned: number; savedTokensEst: number; errors: number; tools: Record<string, ToolCounters>; lastAt?: number }>; total: { calls: number; savedTokensEst: number; charsReturned: number } };
+export type ClaudeCodeUsage = { calls: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUSD: number; cacheEfficiency: number; byModel: Record<string, { calls: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; costUSD: number }>; sessions: number; firstAt?: number; lastAt?: number; projectDir?: string; unpricedModels: string[] };
+export type UsageBlock = { session: UsageTotals; allTime: UsageTotals; days?: { day: string; inputTokens: number }[]; byProvider?: Record<string, { calls: number; inputTokens: number }>; cacheEfficiency?: number; tools?: ToolsServed; claudeCode?: ClaudeCodeUsage; repo?: string };
 export type ClaudeCodeNetwork = { settingsPath: string; proxyError?: string; writtenProxy: string; writtenHasCredentials: boolean; writtenCa: string; detectedProxy: string; detectedProxySource: string; detectedCa: string; detectedCaSource: string; caRequiredHint: boolean; upToDate: boolean; credentialSource: 'url' | 'secrets' | 'none'; credentialUser: string };
 export type ClaudeCodeStatus = { mcpJson: boolean; commands: boolean; rules: boolean; mcpEntry?: string; network?: ClaudeCodeNetwork };
 export type BridgeStatus = { enabled: boolean; running: boolean; url?: string; upstream: string; stats?: { connects: number; upstreamOk: number; upstreamRejected: number; lastUpstreamStatus?: string; lastError?: string }; error?: string };
@@ -15,12 +19,12 @@ export type HostRequest =
 	| { type: 'getRules' } | { type: 'setRules'; text: string }
 	| { type: 'setupClaudeCode' } | { type: 'setProxyCredentials' } | { type: 'bridgeStart' } | { type: 'bridgeStop' } | { type: 'bridgeLog' }
 	| { type: 'openNativeSettings' } | { type: 'openOutput' } | { type: 'openReport' } | { type: 'openGraph' }
-	| { type: 'resetUsage' }
+	| { type: 'resetUsage' } | { type: 'refreshUsage' }
 	| { type: 'mcpRefresh' }
 	| { type: 'detectProviders' };
 
 export type HostResponse = {
-	settings?: SettingsSnapshot; index?: IndexStatus; usage?: { session: UsageTotals; allTime: UsageTotals }; claudeCode?: ClaudeCodeStatus;
+	settings?: SettingsSnapshot; index?: IndexStatus; usage?: UsageBlock; claudeCode?: ClaudeCodeStatus;
 	rules?: string; rulesPath?: string; bridge?: BridgeStatus; connection?: ConnectionTest; transportId?: string; models?: string[]; error?: string;
 	mcp?: { servers: { name: string; transport: string; target: string; enabled: boolean; tools: string[]; error?: string }[] };
 	ruleSources?: string[];

@@ -1177,6 +1177,11 @@
           "items": {
             "type": "object"
           }
+        },
+        "riaf.usage.readClaudeCodeTranscripts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show real Claude Code token usage and cost for the open repository in the Usage tab, read locally from Claude Code's own transcripts under ~/.claude/projects. Nothing is sent anywhere."
         }
       }
     },

@@ -14,6 +14,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { RiafIndex, setSqliteModuleLoader, setTreeSitterWasmDir } from '@bosch-mps/riaf-core';
+import { recordToolCall, toolStatsPathFor } from './toolStats.js';
 import { FileLedger, nextReadySubtasks, renderLedger, verifySubtask } from '@bosch-mps/riaf-engine';
 import { executeOrgTool, executeSearchTool, ORG_TOOL_SPECS, SEARCH_TOOL_SPECS } from './tools/orgTools.js';
 import { executeGraphTool, GRAPH_TOOL_SPECS } from './tools/graphTools.js';
@@ -40,6 +41,27 @@ index.startWatching();
 
 const server = new McpServer({ name: 'riaf', version: '0.1.0' });
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] });
+
+// "Tools served" metrics for the Usage tab: wrap registration so every call is counted (best-effort, never fails the call).
+{
+	const statsPath = toolStatsPathFor(dbPath);
+	const original = server.tool.bind(server);
+	(server as unknown as { tool: unknown }).tool = (name: string, ...rest: unknown[]) => {
+		const idx = rest.findIndex(x => typeof x === 'function');
+		if (idx >= 0) {
+			const handler = rest[idx] as (...a: unknown[]) => Promise<{ content?: { text?: string }[]; isError?: boolean }>;
+			rest[idx] = async (...a: unknown[]) => {
+				let res: Awaited<ReturnType<typeof handler>> | undefined; let ok = true;
+				try { res = await handler(...a); ok = !res?.isError; }
+				catch (e) { ok = false; try { recordToolCall({ statsPath, workspaceRoot, consumer: 'claude-code', toolName: name, args: (a[0] as Record<string, unknown>) ?? {}, result: String((e as Error).message ?? e), ok }); } catch { /* ignore */ } throw e; }
+				const out = res?.content?.map(c => c.text ?? '').join('') ?? '';
+				try { recordToolCall({ statsPath, workspaceRoot, consumer: 'claude-code', toolName: name, args: (a[0] as Record<string, unknown>) ?? {}, result: out, ok }); } catch { /* ignore */ }
+				return res;
+			};
+		}
+		return (original as (...x: unknown[]) => unknown)(name, ...rest);
+	};
+}
 
 server.tool('search_codebase',
 	'Hybrid BM25 + semantic search over the indexed repository. Returns ranked code chunks with path and line range. Use this before reading files blindly.',

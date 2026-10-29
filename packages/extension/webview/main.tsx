@@ -278,8 +278,10 @@ function Rules({ rules, path, sources, call }: { rules: string; path?: string; s
 	);
 }
 
-function Usage({ usage, transportId, call }: { usage?: { session: UsageTotals; allTime: UsageTotals; days?: { day: string; inputTokens: number }[]; byProvider?: Record<string, { calls: number; inputTokens: number }>; cacheEfficiency?: number }; transportId?: string; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+function Usage({ usage, transportId, call }: { usage?: HostResponse['usage']; transportId?: string; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
 	const s = usage?.session, a = usage?.allTime;
+	const cc = usage?.claudeCode; const tools = usage?.tools;
+	const when = (t?: number) => t ? new Date(t).toLocaleString() : '—';
 	const saving = useMemo(() => s && s.inputTokens + s.savedTokens > 0 ? Math.round(100 * s.savedTokens / (s.inputTokens + s.savedTokens)) : 0, [s]);
 	return (
 		<Section id="usage" title="Usage" desc={`Token usage metered per model call${transportId ? ` · transport: ${transportId}` : ''}.`}>
@@ -309,8 +311,49 @@ function Usage({ usage, transportId, call }: { usage?: { session: UsageTotals; a
 				<StatCard label="Saved by RIAF" value={fmtTokens(a?.savedTokens ?? 0)} />
 				<StatCard label="Est. cost" value={fmtUsd(a?.costUSD ?? 0)} />
 			</div>
-			<div><Button kind="danger" small onClick={() => call({ type: 'resetUsage' })}>Reset all-time counters</Button></div>
-			<Note>"Saved" counts tokens kept out of prompts by stale-result compaction, context trimming and duplicate-read suppression. Costs use the built-in price table and are estimates; with Copilot-provided models token counts are estimated too.</Note>
+			<Note>The two blocks above count model calls <b>RIAF makes itself</b> — @riaf, /run, quick edit, commit messages, summaries, explore. When Copilot or Claude Code call RIAF's tools, <i>they</i> make the model call; those tokens appear in the sections below.</Note>
+
+			<h3 style={{ fontSize: 14, fontWeight: 600, margin: '14px 0 2px' }}>Tools served{usage?.repo ? ` · ${usage.repo}` : ''}</h3>
+			<div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>RIAF tool calls answered for other assistants. "Saved" estimates the tokens they would have spent reading the whole files instead of the ranked chunks / outlines RIAF returned.</div>
+			{tools && tools.total.calls > 0 ? (
+				<div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+					{Object.entries(tools.byConsumer).map(([consumer, row]) => (
+						<div key={consumer}>
+							<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+								<StatCard label={consumer === 'claude-code' ? 'Claude Code · calls' : consumer === 'copilot' ? 'Copilot · calls' : `${consumer} · calls`} value={String(row.calls)} sub={row.errors ? `${row.errors} errors` : undefined} />
+								<StatCard label="Returned" value={fmtTokens(Math.round(row.charsReturned / 4))} sub="tokens (chars ÷ 4)" />
+								<StatCard label="Saved (est.)" value={fmtTokens(row.savedTokensEst)} sub="vs reading whole files" />
+								<StatCard label="Last call" value={when(row.lastAt)} />
+							</div>
+							<div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)', marginTop: 4 }}>
+								{Object.entries(row.tools).sort((x, y) => y[1].calls - x[1].calls).slice(0, 10).map(([t, c]) => `${t} ×${c.calls}`).join(' · ')}
+							</div>
+						</div>
+					))}
+				</div>
+			) : <div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>No tool calls served yet for this repo. Use <code>#riaf</code> in Copilot Chat or any riaf tool in Claude Code.</div>}
+
+			<h3 style={{ fontSize: 14, fontWeight: 600, margin: '14px 0 2px' }}>Claude Code · this repo</h3>
+			<div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>Real numbers from Claude Code's own transcripts under <code>~/.claude/projects</code> (read locally; nothing is sent). Covers every Claude Code session in this folder, with or without RIAF.</div>
+			{cc?.projectDir ? (
+				<>
+					<div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+						<StatCard label="Calls" value={String(cc.calls)} sub={`${cc.sessions} session${cc.sessions === 1 ? '' : 's'}`} />
+						<StatCard label="Input tokens" value={fmtTokens(cc.inputTokens)} sub={`${fmtTokens(cc.cacheReadTokens)} from cache · ${fmtTokens(cc.cacheWriteTokens)} written`} />
+						<StatCard label="Output tokens" value={fmtTokens(cc.outputTokens)} />
+						<StatCard label="Cache efficiency" value={`${Math.round(100 * cc.cacheEfficiency)}%`} sub="cache read / prompt tokens" />
+						<StatCard label="Est. cost" value={fmtUsd(cc.costUSD)} sub={cc.unpricedModels.length ? `no price for ${cc.unpricedModels.join(', ')}` : 'Anthropic list prices'} />
+						<StatCard label="Last activity" value={when(cc.lastAt)} />
+					</div>
+					{Object.keys(cc.byModel).length > 0 && <div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>{Object.entries(cc.byModel).map(([m, r]) => `${m}: ${r.calls} calls, ${fmtTokens(r.inputTokens + r.cacheReadTokens)} in, ${fmtTokens(r.outputTokens)} out, ${fmtUsd(r.costUSD)}`).join(' · ')}</div>}
+				</>
+			) : <div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>No Claude Code transcripts found for this folder yet (looked under ~/.claude/projects). Run <code>claude</code> in this repo once, or turn on <code>riaf.usage.readClaudeCodeTranscripts</code>.</div>}
+
+			<div style={{ display: 'flex', gap: 8 }}>
+				<Button small onClick={() => call({ type: 'refreshUsage' })}>Refresh</Button>
+				<Button kind="danger" small onClick={() => call({ type: 'resetUsage' })}>Reset RIAF counters</Button>
+			</div>
+			<Note>"Saved by RIAF" counts tokens kept out of prompts by stale-result compaction, context trimming and duplicate-read suppression. Costs use the built-in price table and are estimates; with Copilot-provided models token counts are estimated too. Copilot does not expose its own token usage to extensions, so for Copilot only the tools-served figures are available.</Note>
 		</Section>
 	);
 }

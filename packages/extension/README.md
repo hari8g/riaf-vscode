@@ -208,7 +208,7 @@ Typical session: `/riaf-run add exponential backoff to the charger status poller
 - **Tools** — edit approval, terminal approval, MCP approval, auto-approve detected test command, allowlist, deny patterns, sandbox mode, hooks JSON, security extra rules, web search.
 - **MCP** — servers from `.mcp.json` and user `mcp.json`: status, tools, enable/disable per server.
 - **Rules** — `.riafrules` editor; shows AGENTS.md / `.riaf/rules/*` sources that apply.
-- **Usage** — session and all-time: calls, input (with cache hits), output, saved-by-RIAF with %, cost; per-purpose breakdown; budget; reset.
+- **Usage** — three sources: (1) **RIAF's own model calls** (`@riaf`, `/run`, quick edit, commit, summaries, explore): session and all-time calls, input (with cache hits), output, saved-by-RIAF with %, cost, cache efficiency, 14-day bars, per-provider; (2) **Tools served** to Copilot and Claude Code: calls per tool, tokens returned, and an estimate of tokens they didn't have to spend reading whole files; (3) **Claude Code · this repo** — real calls, input/output, cache read/write, cache efficiency and cost from Claude Code's own transcripts (`~/.claude/projects`, read locally). Copilot does not expose its token usage to extensions, so for Copilot only the tools-served figures exist.
 - **Claude Code** — setup status lights, proxy written-vs-detected, credentials, CA, proxy bridge controls + per-CONNECT stats and log.
 
 All controls are ordinary `riaf.*` settings — the native Settings UI and `settings.json` stay in sync; put them in `.vscode/settings.json` to share with the team.
@@ -315,6 +315,7 @@ RIAF search instead of blind reads · duplicate-read suppression across turns ·
 | `riaf.general.aiInstructions` | `""` | Added to every prompt |
 | `riaf.general.disableSystemPrompt` | `false` | Only your instructions + mode line |
 | `riaf.general.metricsOptOut` | `false` | Don't record token totals |
+| `riaf.usage.readClaudeCodeTranscripts` | `true` | Show Claude Code's real usage for the open repo from `~/.claude/projects` (local read only) |
 | `riaf.claudeCode.writeUserSettings` | `true` | Setup writes proxy/CA into `~/.claude/settings.json` |
 | `riaf.claudeCode.proxyUrl` | `""` | Host:port only; empty = auto-detect |
 | `riaf.claudeCode.noProxy` | `localhost, 127.0.0.1` | Bypass list |
@@ -342,13 +343,14 @@ RIAF search instead of blind reads · duplicate-read suppression across turns ·
 | `claude`: *ERR_SOCKET_CLOSED* / proxy 407 | Wrong proxy host or credentials — curl-test with `-x <proxy> -U user:pass`; pin the working proxy; use the bridge and read its log |
 | Gateway 401/403 | Wrong SSO scope; or `auth: header` + `riaf.gateway.headers` |
 | Gateway returns, nothing streams | `riaf.gateway.stream: false` |
+| Usage shows zeros although I use RIAF in Claude Code / Copilot | Expected for the top two blocks: they count calls RIAF makes itself. Look at **Tools served** and **Claude Code · this repo** lower on the same tab (needs `riaf.usage.readClaudeCodeTranscripts`, default on). Doctor prints the transcript folder it found |
 | Hook seems ignored | Hooks match tool names (preTool) / paths (postEdit) by regex; a hook that fails to launch now blocks and says why |
 
 ## 18. Files RIAF creates
 
 | Path | Contents |
 |---|---|
-| `<globalStorage>/riaf-<hash>.sqlite` | The index (one per workspace; Doctor prints the path) |
+| `<globalStorage>/riaf-<hash>.sqlite` (+ `.tools.json`) | The index (one per workspace; Doctor prints the path) and the tools-served counters |
 | `.riaf/runs/*.json` | Run ledgers (`/run`, `/status`, `/resume`, Claude Code `plan_*`) |
 | `.riaf/notes/*.md`, `.riaf/interactions.json` | Notepads; interaction history used to boost search ranking |
 | `.riafrules`, `.riaf/hooks.json`, `.riaf/rules/` | Project rules and hooks (yours) |

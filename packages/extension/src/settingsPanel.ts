@@ -8,10 +8,12 @@ import { probeOllama } from './providerHttp.js';
 import { loadMcpServers } from './mcpConfig.js';
 import { discoverMcpTools } from './mcpClient.js';
 import { readSettings } from './config.js';
+import { readClaudeUsageCached, type ClaudeUsageTotals } from './claudeUsage.js';
+import { readToolStats, resetToolStats, summarizeToolStats, toolStatsPathFor, type ToolStatsSummary } from './toolStats.js';
 import type { IndexManager } from './indexManager.js';
 import { createTransport, type ModelTransport } from './modelTransport.js';
 import { RULES_FILENAME, readRules, writeRules } from './rules.js';
-import type { UsageMeter } from './usage.js';
+import type { UsageMeter, UsageTotals } from './usage.js';
 
 /**
  * Settings panel host: a WebviewPanel running the React UI from webview/, talking over a tiny
@@ -31,6 +33,7 @@ export const SETTING_KEYS = [
 	'agent.sandbox', 'agent.hooks', 'agent.summarizeHistory', 'agent.exploreSubagent', 'agent.checkpoints',
 	'agent.maxConsecutiveToolFails', 'agent.llmStreamStallTimeoutMs', 'agent.exploreMaxSteps', 'agent.diagnosticsSettleMs',
 	'agent.enableLightAgent', 'agent.enableParallelReadBatching', 'agent.sessionBudgetUsd', 'agent.sandboxVerificationNudge',
+	'usage.readClaudeCodeTranscripts',
 	'claudeCode.writeUserSettings', 'claudeCode.proxyUrl', 'claudeCode.noProxy', 'claudeCode.caCertPath', 'claudeCode.proxyBridge', 'claudeCode.proxyBridgePort',
 	'models.main', 'models.plan', 'models.summary', 'models.explore', 'models.critic', 'models.commit', 'models.autocomplete',
 	'general.aiInstructions', 'general.disableSystemPrompt', 'general.metricsOptOut',
@@ -55,7 +58,7 @@ export function snapshotSettings(): Record<string, unknown> {
 
 async function statusBlock(d: PanelDeps): Promise<HostResponse> {
 	const folder = d.indexes.folderFor(vscode.window.activeTextEditor?.document.uri);
-	const out: HostResponse = { settings: snapshotSettings(), usage: { session: d.usage.session, allTime: d.usage.allTime, days: d.usage.history(), byProvider: d.usage.byProvider, cacheEfficiency: d.usage.cacheEfficiency() }, transportId: d.transport()?.id };
+	const out: HostResponse = { settings: snapshotSettings(), usage: usageBlock(d), transportId: d.transport()?.id };
 	if (folder) {
 		try {
 			const idx = await d.indexes.get(folder);
@@ -128,6 +131,23 @@ function mcpBlock(root: string, probed?: { errors: Map<string, string>; tools: M
 	};
 }
 
+/** Everything the Usage tab shows: RIAF's own model calls, tools served to Copilot / Claude Code, and Claude Code's real usage for this repo. */
+export type UsageBlock = {
+	session: UsageTotals; allTime: UsageTotals;
+	days: ReturnType<UsageMeter['history']>; byProvider: UsageMeter['byProvider']; cacheEfficiency: number;
+	tools?: ToolStatsSummary; claudeCode?: ClaudeUsageTotals; repo?: string;
+};
+export function usageBlock(d: PanelDeps): UsageBlock {
+	const folder = d.indexes.folderFor(vscode.window.activeTextEditor?.document.uri);
+	const base: UsageBlock = { session: d.usage.session, allTime: d.usage.allTime, days: d.usage.history(), byProvider: d.usage.byProvider, cacheEfficiency: d.usage.cacheEfficiency() };
+	if (!folder) { return base; }
+	let tools: ToolStatsSummary | undefined;
+	try { tools = summarizeToolStats(readToolStats(toolStatsPathFor(d.indexes.dbPathFor(folder)))); } catch { /* metrics are best-effort */ }
+	let claudeCode: ClaudeUsageTotals | undefined;
+	try { claudeCode = readSettings().usage.readClaudeCodeTranscripts ? readClaudeUsageCached(folder.uri.fsPath) : undefined; } catch { /* best-effort */ }
+	return { ...base, tools, claudeCode, repo: folder.name };
+}
+
 /** Pure-ish request handler (exported for tests). */
 export async function handle(req: HostRequest, d: PanelDeps): Promise<HostResponse> {
 	const folder = d.indexes.folderFor(vscode.window.activeTextEditor?.document.uri);
@@ -167,7 +187,13 @@ export async function handle(req: HostRequest, d: PanelDeps): Promise<HostRespon
 		case 'openOutput': d.indexes.output.show(true); return {};
 		case 'openReport': await vscode.commands.executeCommand('riaf.showReport'); return {};
 		case 'openGraph': await vscode.commands.executeCommand('riaf.showContextGraph'); return {};
-		case 'resetUsage': d.usage.resetAllTime(); return { usage: { session: d.usage.session, allTime: d.usage.allTime, days: d.usage.history(), byProvider: d.usage.byProvider, cacheEfficiency: d.usage.cacheEfficiency() } };
+		case 'resetUsage': {
+			d.usage.resetAllTime();
+			const f = d.indexes.folderFor(vscode.window.activeTextEditor?.document.uri);
+			if (f) { try { resetToolStats(toolStatsPathFor(d.indexes.dbPathFor(f))); } catch { /* ignore */ } }
+			return { usage: usageBlock(d) };
+		}
+		case 'refreshUsage': return { usage: usageBlock(d) };
 		case 'detectProviders': {
 			const base = readSettings().providers.ollamaUrl || 'http://127.0.0.1:11434';
 			try { return { detected: { ollama: await probeOllama(base, globalThis.fetch) } }; }
@@ -210,7 +236,10 @@ export function openSettingsPanel(d: PanelDeps): void {
 		void panel?.webview.postMessage({ id: m.id, res });
 	}));
 	// live pushes: usage ticks and settings edited elsewhere
-	subs.push(d.usage.onDidChange(() => void panel?.webview.postMessage({ push: { usage: { session: d.usage.session, allTime: d.usage.allTime, days: d.usage.history(), byProvider: d.usage.byProvider, cacheEfficiency: d.usage.cacheEfficiency() } } })));
+	subs.push(d.usage.onDidChange(() => void panel?.webview.postMessage({ push: { usage: usageBlock(d) } })));
+	// tools served and Claude Code transcripts change outside the extension host: poll while the panel is open
+	const poll = setInterval(() => { if (panel?.visible) { void panel.webview.postMessage({ push: { usage: usageBlock(d) } }); } }, 10_000);
+	subs.push({ dispose: () => clearInterval(poll) });
 	subs.push(vscode.workspace.onDidChangeConfiguration(e => { if (e.affectsConfiguration('riaf')) { void panel?.webview.postMessage({ push: { settings: snapshotSettings() } }); } }));
 	panel.onDidDispose(() => { subs.forEach(s => s.dispose()); panel = undefined; });
 }

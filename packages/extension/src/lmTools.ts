@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import type { IndexManager } from './indexManager.js';
 import { LM_TOOLS, LM_TOOLS_ALREADY_CONTRIBUTED } from './lmToolCatalog.js';
 import { executeTool } from './tools/toolRegistry.js';
+import { recordToolCall, toolStatsPathFor } from './toolStats.js';
 
 /**
  * Exposes RIAF retrieval as Language Model Tools, so Copilot Chat (agent mode or #riaf in a
@@ -14,7 +15,9 @@ export function registerLmTools(ctx: vscode.ExtensionContext, indexes: IndexMana
 		const index = await indexes.get(folder);
 		if (!index.getStatus().indexed) { await indexes.reindex(folder); }
 		const out = await executeTool(toolName, options.input ?? {}, { folder, index, requireEditApproval: true, allowRunCommand: false, token });
-		return text(out.ok ? out.result : `ERROR: ${out.error}`);
+		const result = out.ok ? out.result : `ERROR: ${out.error}`;
+		try { recordToolCall({ statsPath: toolStatsPathFor(indexes.dbPathFor(folder)), workspaceRoot: folder.uri.fsPath, consumer: 'copilot', toolName, args: options.input ?? {}, result, ok: out.ok }); } catch { /* metrics are best-effort */ }
+		return text(result);
 	};
 	const text = (s: string) => new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(s)]);
 
