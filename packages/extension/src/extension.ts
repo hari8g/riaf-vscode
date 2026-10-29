@@ -16,6 +16,9 @@ import { SETTING_KEYS, claudeCodeNetworkStatus, openSettingsPanel, snapshotSetti
 import { registerProposalProvider } from './tools/editApproval.js';
 import { resolveShell } from './tools/shell.js';
 import { UsageMeter } from './usage.js';
+import { initIntegrationsHost, integrationHealth, setIntegrationCredentials, syncSharedCredentials } from './integrations/host.js';
+import { ADAPTER_IDS, allAdapters } from './integrations/index.js';
+import { readAudit } from './integrations/audit.js';
 
 let indexes: IndexManager | undefined;
 
@@ -41,6 +44,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 	setOutboundProxy(async () => (await bridge.ensureStarted())?.url);
 	setProviderSecrets(key => ctx.secrets.get(key));
 	void bridge.ensureStarted();
+
+	initIntegrationsHost(ctx);
+	ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+		if (e.affectsConfiguration('riaf.integrations.shareCredentialsWithClaudeCode')) { void syncSharedCredentials(); }
+	}));
 
 	registerLmTools(ctx, indexes);
 	registerChatParticipant(ctx, indexes, usage);
@@ -117,6 +125,23 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 			await ctx.secrets.store('riaf.webSearch.tavily', key);
 			void vscode.window.showInformationMessage('RIAF web search key saved.');
 		}),
+		vscode.commands.registerCommand('riaf.setIntegrationCredentials', () => setIntegrationCredentials()),
+		vscode.commands.registerCommand('riaf.testIntegrations', async () => {
+			const f = indexes!.folderFor();
+			const lines = await Promise.all(ADAPTER_IDS.map(async id => {
+				const h = await integrationHealth(id, f?.uri.fsPath);
+				const a = allAdapters().find(x => x.id === id)!;
+				return `${h.ok ? '$(pass)' : h.enabled ? '$(error)' : '$(circle-slash)'} ${a.displayName}: ${h.message}${h.missingCredentials.length && h.enabled ? ` — missing credentials: ${h.missingCredentials.join(', ')}` : ''}`;
+			}));
+			await vscode.window.showQuickPick(lines.map(l => ({ label: l })), { placeHolder: 'Integration health (Esc to close)' });
+		}),
+		vscode.commands.registerCommand('riaf.showIntegrationAudit', async () => {
+			const f = indexes!.folderFor(); if (!f) { return; }
+			const rows = readAudit(f.uri.fsPath, 200);
+			const md = ['# RIAF integration audit', '', `\`${f.uri.fsPath}/.riaf/audit.jsonl\` — newest first`, '', ...(rows.length ? rows.map(r => `- ${r.at} · **${r.consumer}** · ${r.adapter}.${r.tool} · ${r.ok ? 'ok' : 'FAILED'} (${r.ms} ms, approval: ${r.approved ?? 'n/a'})\n  args: \`${r.args}\`${r.error ? `\n  error: ${r.error}` : ''}`) : ['(no writes recorded yet)'])];
+			const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: md.join('\n') });
+			await vscode.window.showTextDocument(doc, { preview: true });
+		}),
 		vscode.commands.registerCommand('riaf.rememberThis', async () => {
 			const editor = vscode.window.activeTextEditor;
 			const selected = editor ? editor.document.getText(editor.selection).trim() : '';
@@ -149,6 +174,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 				lines.push(`- Claude Code transcripts: ${cc?.projectDir ? `${cc.projectDir} — ${cc.calls} calls, ${cc.sessions} sessions, cache efficiency ${Math.round(100 * cc.cacheEfficiency)}%, est. $${cc.costUSD.toFixed(2)}${cc.unpricedModels.length ? ` (no price for ${cc.unpricedModels.join(', ')})` : ''}` : readSettings().usage.readClaudeCodeTranscripts ? 'none found for this folder under ~/.claude/projects' : 'disabled (riaf.usage.readClaudeCodeTranscripts)'}`);
 			}
 			lines.push(`- embeddings: ${s.embeddings.enabled ? `on (${s.embeddings.model})` : 'off (BM25-only, offline)'}`);
+			for (const id of ADAPTER_IDS) {
+				const h = await integrationHealth(id, f?.uri.fsPath);
+				const a = allAdapters().find(x => x.id === id)!;
+				lines.push(`- integration ${a.displayName}: ${!h.enabled ? 'disabled' : h.ok ? `OK — ${h.message}${h.latencyMs ? ` (${h.latencyMs} ms)` : ''}` : `FAILED — ${h.message}`}${h.enabled && h.missingCredentials.length ? ` · missing credentials: ${h.missingCredentials.join(', ')} (run "RIAF: Set Integration Credentials")` : ''}`);
+			}
 			if (usesGateway(s)) {
 				try {
 					const t = await createTransport();

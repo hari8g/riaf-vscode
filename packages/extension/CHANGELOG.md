@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+- Enterprise integrations framework: adapters for **Jira** (Cloud + Data Center), **Confluence**, **GitLab** (self-hosted / gitlab.com) and **knowledge stores** (Qdrant, Weaviate, Chroma vector search; Neo4j read-only Cypher). 30 read tools + 17 write tools, available to `@riaf`, Copilot (`#riaf…`, reads only) and the Claude Code MCP server.
+- Settings → **Integrations** tab: enable per adapter, URL/defaults fields generated from each adapter's schema, Test connection, credential status, recent writes. Commands `RIAF: Set Integration Credentials`, `RIAF: Test Integrations`, `RIAF: Show Integration Audit Log`; Doctor reports each adapter's health.
+- Credentials live only in the OS credential store (`riaf.integration.<id>.<key>`); for Claude Code via `RIAF_INTEGRATION_*` env vars or the opt-in `~/.riaf/credentials.json` (0600). Non-secret config for the MCP server in `.riaf/integrations.json`.
+- Write tools ask first (`riaf.agent.approveIntegrationWrites`) and every write is recorded in `.riaf/audit.jsonl` with redacted arguments; secrets are scrubbed from error text.
+- `scripts/sync-integrations.mjs` keeps `package.json` (settings schema, Copilot tool contributions) in step with the adapters; a test fails when it is stale.
+
 ## 0.2.0
 - Usage tab: "RIAF effect inside Claude Code" — with-vs-without-RIAF comparison from transcripts (prompt/output tokens per call, reads per turn, % saved) and a direct per-tool savings estimate.
 - Claude Code setup writes a version-independent launcher (`.riaf/riaf-mcp.mjs`) and points `.mcp.json` at it; the panel and Doctor flag a stale `.mcp.json` from an older install.

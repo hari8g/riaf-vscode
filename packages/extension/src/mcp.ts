@@ -18,6 +18,9 @@ import { recordToolCall, toolStatsPathFor } from './toolStats.js';
 import { FileLedger, nextReadySubtasks, renderLedger, verifySubtask } from '@bosch-mps/riaf-engine';
 import { executeOrgTool, executeSearchTool, ORG_TOOL_SPECS, SEARCH_TOOL_SPECS } from './tools/orgTools.js';
 import { executeGraphTool, GRAPH_TOOL_SPECS } from './tools/graphTools.js';
+import { ADAPTER_IDS, allAdapters, enabledIntegrationTools, executeIntegrationTool, isEnabled, adapterSettings, adapterForTool } from './integrations/index.js';
+import { mcpSecretGetter, readIntegrationsConfig } from './integrations/mcpConfig.js';
+import { appendAudit } from './integrations/audit.js';
 
 const args = process.argv.slice(2);
 const flag = (n: string): string | undefined => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : undefined; };
@@ -39,7 +42,7 @@ if (!index.getStatus().indexed || args.includes('--reindex')) {
 }
 index.startWatching();
 
-const server = new McpServer({ name: 'riaf', version: '0.1.0' });
+const server = new McpServer({ name: 'riaf', version: '0.3.0' });
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] });
 
 // "Tools served" metrics for the Usage tab: wrap registration so every call is counted (best-effort, never fails the call).
@@ -126,6 +129,42 @@ for (const spec of GRAPH_TOOL_SPECS) {
 for (const spec of ORG_TOOL_SPECS) {
 	server.tool(spec.name, spec.description, zodFromJsonSchema(spec.inputSchema),
 		async (args: Record<string, unknown>) => text((await executeOrgTool(index, spec.name, args)) ?? `unknown tool ${spec.name}`));
+}
+
+// Enterprise integrations (Jira, Confluence, GitLab, knowledge stores): enabled flags and base URLs come from
+// .riaf/integrations.json (written by the extension), credentials from RIAF_INTEGRATION_* env vars or ~/.riaf/credentials.json.
+{
+	const cfg = readIntegrationsConfig(workspaceRoot);
+	const getSecret = mcpSecretGetter();
+	const proxyFetch = await integrationFetch();
+	const envFor = async (adapter: ReturnType<typeof allAdapters>[number]) => ({ fetch: proxyFetch, getSecret, settings: adapterSettings(cfg, adapter), workspaceRoot, log });
+	const tools = enabledIntegrationTools(cfg);
+	for (const spec of tools) {
+		server.tool(spec.name, `${spec.kind === 'write' ? '[writes to ' + adapterForTool(spec.name)!.displayName + '] ' : ''}${spec.description}`, zodFromJsonSchema(spec.inputSchema),
+			async (a: Record<string, unknown>) => {
+				const r = await executeIntegrationTool(spec.name, a, cfg, envFor);
+				if (spec.kind === 'write') { appendAudit(workspaceRoot, { consumer: 'claude-code', adapter: r.adapter ?? '?', tool: spec.name, kind: 'write', args: a, ok: r.ok, ms: r.ms, approved: 'none', result: r.ok ? r.result : undefined, error: r.ok ? undefined : r.error }); }
+				return r.ok ? text(r.result) : { ...text(r.error), isError: true };
+			});
+	}
+	const on = ADAPTER_IDS.filter(id => isEnabled(cfg, id));
+	log(on.length ? `integrations: ${on.join(', ')} (${tools.length} tools)` : 'integrations: none enabled (.riaf/integrations.json)');
+}
+
+/** Outbound fetch for integrations: honours HTTPS_PROXY / HTTP_PROXY (Claude Code already sets these for the corporate proxy). */
+async function integrationFetch(): Promise<(url: string, init?: RequestInit) => Promise<Response>> {
+	const proxy = process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy;
+	if (!proxy) { return (u, i) => fetch(u, i); }
+	try {
+		const { ProxyAgent, fetch: ufetch } = await import('undici');
+		const agent = new ProxyAgent(proxy);
+		const noProxy = (process.env.NO_PROXY ?? process.env.no_proxy ?? '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+		return (u, i) => {
+			let host = ''; try { host = new URL(u).hostname.toLowerCase(); } catch { /* ignore */ }
+			const bypass = host === 'localhost' || host === '127.0.0.1' || noProxy.some(n => host === n.replace(/^\./, '') || host.endsWith(`.${n.replace(/^\./, '')}`));
+			return bypass ? fetch(u, i) : ufetch(u, { ...(i as object), dispatcher: agent } as Parameters<typeof ufetch>[1]) as unknown as Promise<Response>;
+		};
+	} catch { return (u, i) => fetch(u, i); }
 }
 
 const ledger = new FileLedger(workspaceRoot);

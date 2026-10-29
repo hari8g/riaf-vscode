@@ -14,13 +14,17 @@ import type { IndexManager } from './indexManager.js';
 import { createTransport, type ModelTransport } from './modelTransport.js';
 import { RULES_FILENAME, readRules, writeRules } from './rules.js';
 import type { UsageMeter, UsageTotals } from './usage.js';
+import { ADAPTER_IDS, allAdapters, missingCredentials, secretKey, type AdapterId } from './integrations/index.js';
+import { integrationHealth, setIntegrationCredentials, syncSharedCredentials } from './integrations/host.js';
+import { readAudit } from './integrations/audit.js';
+import { credentialsFilePath, integrationsConfigPath } from './integrations/mcpConfig.js';
 
 /**
  * Settings panel host: a WebviewPanel running the React UI from webview/, talking over a tiny
  * request/response protocol. Replaces Trove's 14 DI services with one function, `handle`.
  */
 
-export type HostRequest = { type: string; key?: string; value?: unknown; force?: boolean; text?: string };
+export type HostRequest = { type: string; key?: string; value?: unknown; force?: boolean; text?: string; id?: string };
 export type HostResponse = Record<string, unknown>;
 
 /** All `riaf.*` settings that the UI edits — resolved from VS Code configuration. */
@@ -39,6 +43,7 @@ export const SETTING_KEYS = [
 	'general.aiInstructions', 'general.disableSystemPrompt', 'general.metricsOptOut',
 	'webSearch.enabled', 'webSearch.provider', 'security.extraRules', 'mcp.disabledServers',
 	'providers', 'agent.approveTerminal', 'agent.approveMcp',
+	'integrations.jira', 'integrations.confluence', 'integrations.gitlab', 'integrations.knowledge', 'integrations.shareCredentialsWithClaudeCode', 'agent.approveIntegrationWrites',
 ] as const;
 
 import type { ProxyBridgeManager } from './proxyBridgeManager.js';
@@ -78,6 +83,7 @@ async function statusBlock(d: PanelDeps): Promise<HostResponse> {
 		};
 	}
 	out.mcp = mcpBlock(folder?.uri.fsPath ?? '');
+	out.integrations = await integrationsBlock(d, folder?.uri.fsPath);
 	if (folder) {
 		const sources = findRuleFiles(folder.uri.fsPath);
 		if (existsSync(join(folder.uri.fsPath, '.riafrules'))) { sources.unshift('.riafrules'); }
@@ -148,6 +154,28 @@ export function usageBlock(d: PanelDeps): UsageBlock {
 	return { ...base, tools, claudeCode, repo: folder.name };
 }
 
+/** Integrations tab: adapter catalogue (schema, credential fields, tool counts), stored-credential status, last audit entries. Health is probed on demand. */
+export async function integrationsBlock(d: PanelDeps, root?: string, health?: Partial<Record<AdapterId, Awaited<ReturnType<typeof integrationHealth>>>>): Promise<HostResponse> {
+	const adapters = [];
+	for (const a of allAdapters()) {
+		const missing = await missingCredentials(a, async k => d.ctx.secrets.get(k));
+		adapters.push({
+			id: a.id, displayName: a.displayName,
+			settingsSchema: a.settingsSchema,
+			credentials: a.credentials.map(c => ({ ...c, stored: !missing.includes(c.key) })),
+			tools: a.tools.map(t => ({ name: t.name, kind: t.kind, label: t.label })),
+			health: health?.[a.id],
+		});
+	}
+	return {
+		adapters,
+		auditPath: root ? `${root}/.riaf/audit.jsonl` : undefined,
+		audit: root ? readAudit(root, 25) : [],
+		configPath: root ? integrationsConfigPath(root) : undefined,
+		credentialsFile: credentialsFilePath(),
+	};
+}
+
 /** Pure-ish request handler (exported for tests). */
 export async function handle(req: HostRequest, d: PanelDeps): Promise<HostResponse> {
 	const folder = d.indexes.folderFor(vscode.window.activeTextEditor?.document.uri);
@@ -198,6 +226,26 @@ export async function handle(req: HostRequest, d: PanelDeps): Promise<HostRespon
 			const base = readSettings().providers.ollamaUrl || 'http://127.0.0.1:11434';
 			try { return { detected: { ollama: await probeOllama(base, globalThis.fetch) } }; }
 			catch { return { detected: { ollama: [] } }; }
+		}
+		case 'integrationHealth': {
+			const ids = (req.id ? [req.id as AdapterId] : ADAPTER_IDS);
+			const health: Partial<Record<AdapterId, Awaited<ReturnType<typeof integrationHealth>>>> = {};
+			await Promise.all(ids.map(async id => { health[id] = await integrationHealth(id, folder?.uri.fsPath); }));
+			return { integrations: await integrationsBlock(d, folder?.uri.fsPath, health) };
+		}
+		case 'setIntegrationCredentials': {
+			await setIntegrationCredentials(req.id as AdapterId | undefined);
+			return { integrations: await integrationsBlock(d, folder?.uri.fsPath) };
+		}
+		case 'clearIntegrationCredentials': {
+			const a = allAdapters().find(x => x.id === req.id);
+			if (a) { for (const c of a.credentials) { await d.ctx.secrets.delete(secretKey(a.id, c.key)); } await syncSharedCredentials(); }
+			return { integrations: await integrationsBlock(d, folder?.uri.fsPath) };
+		}
+		case 'syncSharedCredentials': await syncSharedCredentials(); return { integrations: await integrationsBlock(d, folder?.uri.fsPath) };
+		case 'openAudit': {
+			if (folder) { try { await vscode.window.showTextDocument(vscode.Uri.joinPath(folder.uri, '.riaf', 'audit.jsonl')); } catch { void vscode.window.showInformationMessage('No integration writes recorded yet for this repo.'); } }
+			return {};
 		}
 		case 'mcpRefresh': {
 			const root = folder?.uri.fsPath ?? '';

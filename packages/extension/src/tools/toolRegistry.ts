@@ -23,6 +23,8 @@ import { noteInteraction, readCoChange, recentInteractions } from '../interactio
 import type { ModelTransport } from '../modelTransport.js';
 import type { Checkpoint, CheckpointStore } from '../checkpoints.js';
 import type { SandboxMode } from '../config.js';
+import { isIntegrationTool, isIntegrationReadTool, enabledIntegrationTools } from '../integrations/index.js';
+import { readIntegrationsConfig, runIntegrationTool } from '../integrations/host.js';
 
 /* ───────────────────────────── tool catalogue ───────────────────────────── */
 
@@ -94,6 +96,8 @@ export interface ToolContext {
 	transport?: ModelTransport;
 	onSubagentUsage?: (usage: NonNullable<import('../modelTransport.js').TransportResult['usage']>, purpose: string) => void;
 	log?: (msg: string) => void;
+	/** Who is calling (for the integrations audit log): riaf-agent (default), copilot. */
+	consumer?: string;
 }
 
 export type ToolOutcome = { ok: true; result: string; meta?: Record<string, unknown> } | { ok: false; error: string; meta?: Record<string, unknown> };
@@ -116,9 +120,17 @@ async function readText(uri: vscode.Uri): Promise<string> {
 	return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
 }
 
+/** Integration tools (Jira, Confluence, GitLab, knowledge stores) the developer has enabled — appended to TOOL_SPECS by the agent loop. */
+export const integrationToolSpecs = (opts: { readOnly?: boolean } = {}): ToolSpec[] => enabledIntegrationTools(readIntegrationsConfig(), opts);
+
 export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolOutcome> {
 	try {
 		const a = args as Record<string, any>;
+		if (isIntegrationTool(name)) {
+			if (ctx.readOnly && !isIntegrationReadTool(name)) { return { ok: false, error: `${name} is not available in this mode (read-only).` }; }
+			const r = await runIntegrationTool(name, a, { consumer: ctx.consumer ?? 'riaf-agent', workspaceRoot: ctx.folder.uri.fsPath, readOnly: ctx.readOnly });
+			return r.ok ? { ok: true, result: clip(r.result), meta: { integration: r.adapter, kind: r.kind } } : { ok: false, error: r.error, meta: { integration: r.adapter, kind: r.kind } };
+		}
 		if (ctx.readOnly && (EDIT_TOOLS.has(name) || COMMAND_TOOLS.has(name) || (name.startsWith('mcp_') && name !== 'list_mcp_tools'))) {
 			return { ok: false, error: `${name} is not available in this mode (read-only). Describe the change instead of applying it.` };
 		}

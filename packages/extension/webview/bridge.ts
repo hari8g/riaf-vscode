@@ -23,7 +23,20 @@ export type HostRequest =
 	| { type: 'openNativeSettings' } | { type: 'openOutput' } | { type: 'openReport' } | { type: 'openGraph' }
 	| { type: 'resetUsage' } | { type: 'refreshUsage' }
 	| { type: 'mcpRefresh' }
-	| { type: 'detectProviders' };
+	| { type: 'detectProviders' }
+	| { type: 'integrationHealth'; id?: string } | { type: 'setIntegrationCredentials'; id?: string } | { type: 'clearIntegrationCredentials'; id: string }
+	| { type: 'syncSharedCredentials' } | { type: 'openAudit' };
+
+export type IntegrationHealth = { ok: boolean; enabled: boolean; message: string; latencyMs?: number; missingCredentials: string[]; detail?: Record<string, unknown> };
+export type IntegrationAdapterInfo = {
+	id: string; displayName: string;
+	settingsSchema: Record<string, { type: 'string' | 'boolean' | 'number' | 'enum'; description: string; default?: unknown; enum?: string[] }>;
+	credentials: { key: string; label: string; secret: boolean; hint?: string; stored: boolean }[];
+	tools: { name: string; kind: 'read' | 'write'; label: string }[];
+	health?: IntegrationHealth;
+};
+export type AuditEntry = { at: string; consumer: string; adapter: string; tool: string; kind: 'read' | 'write'; args: string; ok: boolean; ms: number; approved?: string; error?: string };
+export type IntegrationsBlock = { adapters: IntegrationAdapterInfo[]; audit: AuditEntry[]; auditPath?: string; configPath?: string; credentialsFile: string };
 
 export type HostResponse = {
 	settings?: SettingsSnapshot; index?: IndexStatus; usage?: UsageBlock; claudeCode?: ClaudeCodeStatus;
@@ -31,6 +44,7 @@ export type HostResponse = {
 	mcp?: { servers: { name: string; transport: string; target: string; enabled: boolean; tools: string[]; error?: string }[] };
 	ruleSources?: string[];
 	detected?: { ollama: string[] };
+	integrations?: IntegrationsBlock;
 };
 
 type Envelope = { id: number; req?: HostRequest; res?: HostResponse; push?: HostResponse };

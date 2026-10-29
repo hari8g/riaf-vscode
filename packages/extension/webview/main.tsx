@@ -8,7 +8,7 @@ import { Badge, Button, Note, NumberInput, Row, Section, Select, StatCard, TextA
 type Settings = Record<string, unknown>;
 const TABS = [
 	['gateway', 'Gateway'], ['providers', 'Providers'], ['index', 'Repository Intelligence'], ['agent', 'Agent'], ['tools', 'Tools'],
-	['mcp', 'MCP'], ['rules', 'Rules'], ['usage', 'Usage'], ['claude', 'Claude Code'],
+	['mcp', 'MCP'], ['integrations', 'Integrations'], ['rules', 'Rules'], ['usage', 'Usage'], ['claude', 'Claude Code'],
 ] as const;
 type Tab = typeof TABS[number][0];
 
@@ -56,6 +56,7 @@ function App() {
 				{show('agent') && <Agent get={get} set={set} />}
 				{show('tools') && <Tools get={get} set={set} />}
 				{show('mcp') && <Mcp mcp={state.mcp} get={get} set={set} call={call} />}
+				{show('integrations') && <Integrations block={state.integrations} get={get} set={set} call={call} />}
 				{show('rules') && <Rules rules={state.rules ?? ''} path={state.rulesPath} sources={state.ruleSources} call={call} />}
 				{show('usage') && <Usage usage={state.usage} transportId={state.transportId} call={call} />}
 				{show('claude') && <ClaudeCode status={state.claudeCode} bridge={state.bridge} call={call} get={get} set={set} />}
@@ -257,6 +258,70 @@ function Mcp({ mcp, get, set, call }: P & { mcp?: HostResponse['mcp']; call: (r:
 				</Row>
 			))}
 			{!servers.length && <Note>No MCP servers found. Add one to .mcp.json in this folder, or to ~/.cursor/mcp.json.</Note>}
+		</Section>
+	);
+}
+
+function Integrations({ block, get, set, call }: P & { block?: HostResponse['integrations']; call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+	const [testing, setTesting] = useState<string | undefined>();
+	const test = async (id?: string) => { setTesting(id ?? 'all'); try { await call({ type: 'integrationHealth', id }); } finally { setTesting(undefined); } };
+	const adapters = block?.adapters ?? [];
+	return (
+		<Section id="integrations" title="Integrations" desc="Enterprise systems the agent can read from and, with your approval, write to: Jira, Confluence, GitLab (self-hosted or gitlab.com) and vector / knowledge-graph stores. Enabled tools appear in @riaf, as #riaf… tools in Copilot, and in the Claude Code MCP server.">
+			<Row label="Approve writes" desc="Ask before any tool that changes data (create issue, comment, update page, create MR, …). Every write is recorded in .riaf/audit.jsonl either way."><Toggle value={get('agent.approveIntegrationWrites', true)} onChange={v => set('agent.approveIntegrationWrites', v)} /></Row>
+			<Row label="Share credentials with Claude Code" desc={`Also write the tokens to ${block?.credentialsFile ?? '~/.riaf/credentials.json'} (mode 0600) so the MCP server can use them. Off: set RIAF_INTEGRATION_<ID>_<KEY> environment variables for Claude Code instead.`}>
+				<Toggle value={get('integrations.shareCredentialsWithClaudeCode', false)} onChange={v => set('integrations.shareCredentialsWithClaudeCode', v)} />
+			</Row>
+			<div style={{ display: 'flex', gap: 8 }}>
+				<Button onClick={() => test()} disabled={!!testing}>{testing === 'all' ? 'Testing…' : 'Test all connections'}</Button>
+				<Button small onClick={() => call({ type: 'openAudit' })}>Open audit log</Button>
+			</div>
+			{adapters.map(a => {
+				const key = `integrations.${a.id}`;
+				const cfg = get<Record<string, unknown>>(key, {}) ?? {};
+				const enabled = cfg.enabled === true;
+				const update = (k: string, v: unknown) => set(key, { ...cfg, [k]: v });
+				const reads = a.tools.filter(t => t.kind === 'read').length, writes = a.tools.length - reads;
+				const h = a.health;
+				return (
+					<div key={a.id} style={{ border: '1px solid var(--vscode-editorGroup-border)', borderRadius: 4, padding: '10px 12px', margin: '10px 0' }}>
+						<div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+							<Toggle value={enabled} onChange={v => update('enabled', v)} />
+							<span style={{ fontWeight: 600, fontSize: 14 }}>{a.displayName}</span>
+							<span style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>{reads} read · {writes} write tools</span>
+							<span style={{ flex: 1 }} />
+							<Button small onClick={() => test(a.id)} disabled={!enabled || !!testing}>{testing === a.id ? 'Testing…' : 'Test connection'}</Button>
+						</div>
+						{h && <div style={{ marginTop: 6 }}><Badge ok={h.ok} warn={!h.ok && h.enabled} text={`${h.message}${h.latencyMs ? ` · ${h.latencyMs} ms` : ''}`} /></div>}
+						{enabled && (
+							<div style={{ marginTop: 6 }}>
+								{Object.entries(a.settingsSchema).map(([k, sch]) => (
+									<Row key={k} label={k} desc={sch.description}>
+										{sch.type === 'boolean' ? <Toggle value={(cfg[k] as boolean) ?? (sch.default as boolean) ?? false} onChange={v => update(k, v)} />
+											: sch.type === 'number' ? <NumberInput value={(cfg[k] as number) ?? (sch.default as number) ?? 0} onChange={v => update(k, v)} />
+												: sch.type === 'enum' ? <Select value={String(cfg[k] ?? sch.default ?? sch.enum?.[0] ?? '')} onChange={v => update(k, v)} options={(sch.enum ?? []).map(e => ({ value: e, label: e }))} />
+													: <TextInput mono value={String(cfg[k] ?? '')} onChange={v => update(k, v)} placeholder={sch.default !== undefined && sch.default !== '' ? String(sch.default) : undefined} />}
+									</Row>
+								))}
+								<Row label="Credentials" desc={`${a.credentials.map(c => `${c.label}${c.stored ? ' ✓' : ' (not set)'}`).join(' · ')}. Stored in the OS credential store, never in settings files.`}>
+									<div style={{ display: 'flex', gap: 8 }}>
+										<Button small onClick={() => call({ type: 'setIntegrationCredentials', id: a.id })}>{a.credentials.some(c => c.stored) ? 'Change…' : 'Set…'}</Button>
+										{a.credentials.some(c => c.stored) && <Button small kind="danger" onClick={() => call({ type: 'clearIntegrationCredentials', id: a.id })}>Clear</Button>}
+									</div>
+								</Row>
+								<div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>Tools: {a.tools.map(t => `${t.name}${t.kind === 'write' ? '*' : ''}`).join(', ')} <i>(* = write, asks first)</i></div>
+							</div>
+						)}
+					</div>
+				);
+			})}
+			<h3 style={{ fontSize: 14, fontWeight: 600, margin: '14px 0 2px' }}>Recent writes</h3>
+			{block?.audit?.length ? (
+				<div style={{ fontSize: 11, display: 'flex', flexDirection: 'column', gap: 3 }}>
+					{block.audit.map((e, i) => <div key={i}><code>{new Date(e.at).toLocaleString()}</code> · {e.consumer} · <b>{e.adapter}.{e.tool}</b> · {e.ok ? 'ok' : <span style={{ color: 'var(--vscode-errorForeground)' }}>failed</span>} · {e.approved ?? ''} <span style={{ color: 'var(--vscode-descriptionForeground)' }}>{e.args.slice(0, 120)}</span></div>)}
+				</div>
+			) : <div style={{ fontSize: 12, color: 'var(--vscode-descriptionForeground)' }}>No integration writes recorded yet{block?.auditPath ? ` (${block.auditPath})` : ''}.</div>}
+			<Note>Claude Code reads the enabled flags and URLs from <code>{block?.configPath ?? '.riaf/integrations.json'}</code> (written automatically, no secrets) and the tokens from <code>RIAF_INTEGRATION_*</code> environment variables or the shared credentials file. Restart the Claude Code session after enabling an integration so the MCP server picks up the new tools.</Note>
 		</Section>
 	);
 }

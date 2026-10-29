@@ -3,6 +3,7 @@ import type { IndexManager } from './indexManager.js';
 import { LM_TOOLS, LM_TOOLS_ALREADY_CONTRIBUTED } from './lmToolCatalog.js';
 import { executeTool } from './tools/toolRegistry.js';
 import { recordToolCall, toolStatsPathFor } from './toolStats.js';
+import { INTEGRATION_TOOL_SPECS } from './integrations/index.js';
 
 /**
  * Exposes RIAF retrieval as Language Model Tools, so Copilot Chat (agent mode or #riaf in a
@@ -14,7 +15,7 @@ export function registerLmTools(ctx: vscode.ExtensionContext, indexes: IndexMana
 		if (!folder) { return text('No workspace folder is open.'); }
 		const index = await indexes.get(folder);
 		if (!index.getStatus().indexed) { await indexes.reindex(folder); }
-		const out = await executeTool(toolName, options.input ?? {}, { folder, index, requireEditApproval: true, allowRunCommand: false, token });
+		const out = await executeTool(toolName, options.input ?? {}, { folder, index, requireEditApproval: true, allowRunCommand: false, token, consumer: 'copilot' });
 		const result = out.ok ? out.result : `ERROR: ${out.error}`;
 		try { recordToolCall({ statsPath: toolStatsPathFor(indexes.dbPathFor(folder)), workspaceRoot: folder.uri.fsPath, consumer: 'copilot', toolName, args: options.input ?? {}, result, ok: out.ok }); } catch { /* metrics are best-effort */ }
 		return text(result);
@@ -30,5 +31,8 @@ export function registerLmTools(ctx: vscode.ExtensionContext, indexes: IndexMana
 		vscode.lm.registerTool('riaf_search_symbols', { invoke: run('search_symbols'), prepareInvocation: prep(i => `Searching symbols for "${i.query}"`) }),
 		...LM_TOOLS.filter(t => !(LM_TOOLS_ALREADY_CONTRIBUTED as readonly string[]).includes(t.name)).map(t =>
 			vscode.lm.registerTool(`riaf_${t.name}`, { invoke: run(t.name), prepareInvocation: prep(() => t.display) })),
+		// enterprise integrations: read tools as #riaf… for Copilot (disabled adapters answer with a one-line "enable it" message)
+		...INTEGRATION_TOOL_SPECS.filter(t => t.kind === 'read').map(t =>
+			vscode.lm.registerTool(`riaf_${t.name}`, { invoke: run(t.name), prepareInvocation: prep(() => `${t.label} (RIAF)`) })),
 	);
 }

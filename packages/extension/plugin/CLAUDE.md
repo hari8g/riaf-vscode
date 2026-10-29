@@ -7,6 +7,10 @@ This repository has a RIAF index available through the `riaf` MCP server. Tools:
 `get_indexing_report`, `reindex`. For a multi-step change also use `plan_create`, `plan_status`,
 `plan_next`, `plan_mark`, `verify_subtask` and `run_critic`: the ledger lives in `.riaf/runs`.
 Use them to keep context small and precise.
+When the repo has enabled enterprise integrations (`.riaf/integrations.json`), the same server also offers
+`jira_*`, `confluence_*`, `gitlab_*`, `kb_*` (vector store) and `kg_*` (knowledge graph) tools. Prefer them over
+pasting ticket text or MR diffs into the prompt. Tools that change data (create/comment/transition/update/
+approve) are recorded in `.riaf/audit.jsonl`; call them only when the task asks for that change.
 
 Context gathering
 - Start every task with `search_codebase` (identifiers, concepts, error text) or `get_context_profile`

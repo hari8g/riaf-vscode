@@ -2,7 +2,7 @@
   "name": "riaf-vscode",
   "displayName": "RIAF — Repository Intelligence & Agent Loop",
   "description": "Repository intelligence for Copilot Chat, Claude Code and the editor: semantic index + context graph as 27 #riaf tools, the @riaf plan→execute→verify agent with a persisted run ledger, an MCP server for Claude Code, native Anthropic/OpenAI/Gemini/Ollama or SSO-gateway models, and a proxy bridge for corporate networks. Offline by default.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "bosch-mps",
   "private": true,
   "license": "MIT",
@@ -670,6 +670,830 @@
           "type": "object",
           "properties": {}
         }
+      },
+      {
+        "name": "riaf_jira_search",
+        "displayName": "search Jira issues (RIAF · Jira)",
+        "toolReferenceName": "riafJiraSearch",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Jira: search Jira issues. Needs riaf.integrations.jira.enabled.",
+        "modelDescription": "Run a JQL query. Returns one compact line per issue (KEY [status] type · assignee · summary) plus the total count.",
+        "icon": "$(issues)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "jql": {
+              "type": "string",
+              "description": "JQL query, e.g. `project = ABC AND status != Done ORDER BY updated DESC`"
+            },
+            "maxResults": {
+              "type": "number",
+              "description": "Max issues to return (default from settings, max 100)"
+            },
+            "fields": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Extra field ids to include per line (e.g. priority, labels, customfield_10016)"
+            }
+          },
+          "required": [
+            "jql"
+          ]
+        }
+      },
+      {
+        "name": "riaf_jira_get_issue",
+        "displayName": "read Jira issue (RIAF · Jira)",
+        "toolReferenceName": "riafJiraGetIssue",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Jira: read Jira issue. Needs riaf.integrations.jira.enabled.",
+        "modelDescription": "Fetch one issue in full: summary, status, type, priority, people, labels, components, versions, dates, parent/epic, links, description (as text), subtasks.",
+        "icon": "$(issues)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Issue key, e.g. ABC-123"
+            }
+          },
+          "required": [
+            "key"
+          ]
+        }
+      },
+      {
+        "name": "riaf_jira_get_comments",
+        "displayName": "read Jira comments (RIAF · Jira)",
+        "toolReferenceName": "riafJiraGetComments",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Jira: read Jira comments. Needs riaf.integrations.jira.enabled.",
+        "modelDescription": "List comments on an issue (newest last), as text.",
+        "icon": "$(issues)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Issue key"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max comments (default 20)"
+            }
+          },
+          "required": [
+            "key"
+          ]
+        }
+      },
+      {
+        "name": "riaf_jira_list_transitions",
+        "displayName": "list Jira transitions (RIAF · Jira)",
+        "toolReferenceName": "riafJiraListTransitions",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Jira: list Jira transitions. Needs riaf.integrations.jira.enabled.",
+        "modelDescription": "List the workflow transitions currently available on an issue (id, name, target status).",
+        "icon": "$(issues)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "Issue key"
+            }
+          },
+          "required": [
+            "key"
+          ]
+        }
+      },
+      {
+        "name": "riaf_jira_sprint",
+        "displayName": "read Jira sprint (RIAF · Jira)",
+        "toolReferenceName": "riafJiraSprint",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Jira: read Jira sprint. Needs riaf.integrations.jira.enabled.",
+        "modelDescription": "Issues in a sprint via the Agile API. With sprintId: that sprint. With boardId only: its active sprint (or `state`). With neither: list boards for defaultProject so you can pick one.",
+        "icon": "$(issues)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "boardId": {
+              "type": "number",
+              "description": "Agile board id"
+            },
+            "sprintId": {
+              "type": "number",
+              "description": "Sprint id"
+            },
+            "state": {
+              "type": "string",
+              "description": "Sprint state filter when resolving by board: active (default), future, closed"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "riaf_jira_my_issues",
+        "displayName": "read my Jira issues (RIAF · Jira)",
+        "toolReferenceName": "riafJiraMyIssues",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Jira: read my Jira issues. Needs riaf.integrations.jira.enabled.",
+        "modelDescription": "Issues assigned to the authenticated user, optionally filtered by status name.",
+        "icon": "$(issues)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "description": "Status name filter, e.g. \"In Progress\" (omit for all unresolved)"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "riaf_confluence_search",
+        "displayName": "search Confluence (RIAF · Confluence)",
+        "toolReferenceName": "riafConfluenceSearch",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Confluence: search Confluence. Needs riaf.integrations.confluence.enabled.",
+        "modelDescription": "Search pages by free text (title/body match, pages only) or raw CQL. Returns id, title, space, last update, URL and an excerpt per hit.",
+        "icon": "$(book)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "Free-text query (becomes `text ~ \"…\" AND type = page`)"
+            },
+            "cql": {
+              "type": "string",
+              "description": "Raw CQL, e.g. `space = ENG AND label = runbook` (overrides text)"
+            },
+            "space": {
+              "type": "string",
+              "description": "Restrict to a space key (defaults to settings.defaultSpace for text searches)"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default from settings)"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "riaf_confluence_get_page",
+        "displayName": "read Confluence page (RIAF · Confluence)",
+        "toolReferenceName": "riafConfluenceGetPage",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Confluence: read Confluence page. Needs riaf.integrations.confluence.enabled.",
+        "modelDescription": "Fetch a page by id, or by title + space. Returns title, space, version, ancestors, labels, URL and the body as text (or raw storage XHTML).",
+        "icon": "$(book)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Page id"
+            },
+            "title": {
+              "type": "string",
+              "description": "Page title (used with space when id is omitted)"
+            },
+            "space": {
+              "type": "string",
+              "description": "Space key for title lookup"
+            },
+            "bodyFormat": {
+              "type": "string",
+              "description": "\"text\" (default) or \"storage\" for raw XHTML"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "riaf_confluence_children",
+        "displayName": "list Confluence child pages (RIAF · Confluence)",
+        "toolReferenceName": "riafConfluenceChildren",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Confluence: list Confluence child pages. Needs riaf.integrations.confluence.enabled.",
+        "modelDescription": "List the direct child pages of a page.",
+        "icon": "$(book)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Parent page id"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max children (default 50)"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      },
+      {
+        "name": "riaf_confluence_page_history",
+        "displayName": "read Confluence page history (RIAF · Confluence)",
+        "toolReferenceName": "riafConfluencePageHistory",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Confluence: read Confluence page history. Needs riaf.integrations.confluence.enabled.",
+        "modelDescription": "List a page's versions (number, author, date, message), newest first.",
+        "icon": "$(book)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Page id"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max versions (default 20)"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      },
+      {
+        "name": "riaf_confluence_attachments",
+        "displayName": "list Confluence attachments (RIAF · Confluence)",
+        "toolReferenceName": "riafConfluenceAttachments",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Confluence: list Confluence attachments. Needs riaf.integrations.confluence.enabled.",
+        "modelDescription": "List attachments on a page with media type, size and download URL.",
+        "icon": "$(book)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Page id"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      },
+      {
+        "name": "riaf_gitlab_project",
+        "displayName": "read GitLab project (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabProject",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: read GitLab project. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "Project summary: id, path, default branch, visibility, last activity, open MR/issue counts.",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "riaf_gitlab_list_mrs",
+        "displayName": "list GitLab merge requests (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabListMrs",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: list GitLab merge requests. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "List merge requests, one per line: `!iid [state] title · author · source→target · updated`.",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "opened",
+                "merged",
+                "closed",
+                "all"
+              ],
+              "description": "MR state filter (default opened)"
+            },
+            "author": {
+              "type": "string",
+              "description": "Author username"
+            },
+            "search": {
+              "type": "string",
+              "description": "Search in title/description"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default settings.maxResults = 20)"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "riaf_gitlab_get_mr",
+        "displayName": "read GitLab merge request (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabGetMr",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: read GitLab merge request. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "Merge request details: description, state, author, reviewers/approvals, branches, pipeline status, changed files with +/- counts, web_url.",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "iid": {
+              "type": "number",
+              "description": "MR iid (the number after !)"
+            }
+          },
+          "required": [
+            "iid"
+          ]
+        }
+      },
+      {
+        "name": "riaf_gitlab_mr_discussions",
+        "displayName": "read GitLab MR discussions (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabMrDiscussions",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: read GitLab MR discussions. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "Review threads on a merge request with file:line, author, body and resolved flag.",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "iid": {
+              "type": "number",
+              "description": "MR iid"
+            },
+            "unresolvedOnly": {
+              "type": "boolean",
+              "description": "Only unresolved threads"
+            }
+          },
+          "required": [
+            "iid"
+          ]
+        }
+      },
+      {
+        "name": "riaf_gitlab_pipelines",
+        "displayName": "list GitLab pipelines (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabPipelines",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: list GitLab pipelines. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "List pipelines for a project, optionally filtered by ref and status.",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "ref": {
+              "type": "string",
+              "description": "Branch or tag"
+            },
+            "status": {
+              "type": "string",
+              "description": "running|pending|success|failed|canceled|skipped|manual|created"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default settings.maxResults = 20)"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "riaf_gitlab_pipeline",
+        "displayName": "read GitLab pipeline (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabPipeline",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: read GitLab pipeline. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "Pipeline details with its stages and jobs (status, duration).",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "id": {
+              "type": "number",
+              "description": "Pipeline id"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      },
+      {
+        "name": "riaf_gitlab_job_log",
+        "displayName": "read GitLab job log (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabJobLog",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: read GitLab job log. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "Tail of a CI job trace with ANSI colour codes stripped.",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "jobId": {
+              "type": "number",
+              "description": "Job id"
+            },
+            "tail": {
+              "type": "number",
+              "description": "Number of trailing lines (default 200)"
+            }
+          },
+          "required": [
+            "jobId"
+          ]
+        }
+      },
+      {
+        "name": "riaf_gitlab_file",
+        "displayName": "read GitLab file (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabFile",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: read GitLab file. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "Raw content of a repository file at a ref (default branch when ref omitted).",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "path": {
+              "type": "string",
+              "description": "File path inside the repository"
+            },
+            "ref": {
+              "type": "string",
+              "description": "Branch, tag or sha"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "riaf_gitlab_blame",
+        "displayName": "read GitLab blame (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabBlame",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: read GitLab blame. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "Compact blame: `sha7 author date | line` for a file (optionally a line range).",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "path": {
+              "type": "string",
+              "description": "File path"
+            },
+            "ref": {
+              "type": "string",
+              "description": "Branch, tag or sha"
+            },
+            "startLine": {
+              "type": "number",
+              "description": "First line (1-based)"
+            },
+            "endLine": {
+              "type": "number",
+              "description": "Last line (inclusive)"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        }
+      },
+      {
+        "name": "riaf_gitlab_search",
+        "displayName": "search GitLab (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabSearch",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: search GitLab. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "Search blobs, issues, merge requests or commits in a project (global search when no project resolves).",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "blobs",
+                "issues",
+                "merge_requests",
+                "commits"
+              ],
+              "description": "Search scope"
+            },
+            "query": {
+              "type": "string",
+              "description": "Search text"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default settings.maxResults = 20)"
+            }
+          },
+          "required": [
+            "scope",
+            "query"
+          ]
+        }
+      },
+      {
+        "name": "riaf_gitlab_commits",
+        "displayName": "list GitLab commits (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabCommits",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: list GitLab commits. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "Recent commits on a ref, optionally restricted to a path or since a date.",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "ref": {
+              "type": "string",
+              "description": "Branch, tag or sha"
+            },
+            "path": {
+              "type": "string",
+              "description": "Only commits touching this path"
+            },
+            "since": {
+              "type": "string",
+              "description": "ISO 8601 date"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default settings.maxResults = 20)"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "riaf_gitlab_issues",
+        "displayName": "list GitLab issues (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabIssues",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: list GitLab issues. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "List issues: `#iid [state] title · author → assignees · [labels] · updated`.",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "opened",
+                "closed",
+                "all"
+              ],
+              "description": "Issue state (default opened)"
+            },
+            "labels": {
+              "type": "string",
+              "description": "Comma-separated labels"
+            },
+            "search": {
+              "type": "string",
+              "description": "Search in title/description"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max results (default settings.maxResults = 20)"
+            }
+          },
+          "required": []
+        }
+      },
+      {
+        "name": "riaf_gitlab_get_issue",
+        "displayName": "read GitLab issue (RIAF · GitLab)",
+        "toolReferenceName": "riafGitlabGetIssue",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "GitLab: read GitLab issue. Needs riaf.integrations.gitlab.enabled.",
+        "modelDescription": "Issue details with description, labels, assignees, milestone and web_url.",
+        "icon": "$(git-merge)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "project": {
+              "type": "string",
+              "description": "Project path 'group/subgroup/project' (default: settings.defaultProject or the workspace git origin)"
+            },
+            "iid": {
+              "type": "number",
+              "description": "Issue iid"
+            }
+          },
+          "required": [
+            "iid"
+          ]
+        }
+      },
+      {
+        "name": "riaf_kb_search",
+        "displayName": "search knowledge base (RIAF · Knowledge stores (vector + graph))",
+        "toolReferenceName": "riafKbSearch",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Knowledge stores (vector + graph): search knowledge base. Needs riaf.integrations.knowledge.enabled.",
+        "modelDescription": "Semantic (or text fallback) search over the configured vector store collection. Returns ranked hits: rank, score, id, text excerpt, metadata keys. Use kb_get to read a full chunk.",
+        "icon": "$(database)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Natural-language query"
+            },
+            "topK": {
+              "type": "number",
+              "description": "Number of hits (default from settings vectorTopK)"
+            },
+            "filter": {
+              "type": "string",
+              "description": "Optional backend-native filter as a JSON object string (Qdrant filter / Weaviate where / Chroma where)"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      },
+      {
+        "name": "riaf_kb_get",
+        "displayName": "read knowledge chunk (RIAF · Knowledge stores (vector + graph))",
+        "toolReferenceName": "riafKbGet",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Knowledge stores (vector + graph): read knowledge chunk. Needs riaf.integrations.knowledge.enabled.",
+        "modelDescription": "Fetch one chunk/object by id from the configured vector store collection: full text (clipped) plus metadata.",
+        "icon": "$(database)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Chunk / point / object id"
+            }
+          },
+          "required": [
+            "id"
+          ]
+        }
+      },
+      {
+        "name": "riaf_kb_collections",
+        "displayName": "list knowledge collections (RIAF · Knowledge stores (vector + graph))",
+        "toolReferenceName": "riafKbCollections",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Knowledge stores (vector + graph): list knowledge collections. Needs riaf.integrations.knowledge.enabled.",
+        "modelDescription": "List the collections/classes in the configured vector store with item counts where the backend reports them.",
+        "icon": "$(database)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      },
+      {
+        "name": "riaf_kg_query",
+        "displayName": "run read-only graph query (RIAF · Knowledge stores (vector + graph))",
+        "toolReferenceName": "riafKgQuery",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Knowledge stores (vector + graph): run read-only graph query. Needs riaf.integrations.knowledge.enabled.",
+        "modelDescription": "Run a READ-ONLY Cypher statement against the knowledge graph (Neo4j). Writes (CREATE/MERGE/DELETE/SET/REMOVE/DROP/LOAD CSV/dbms/apoc write procs) are rejected; a LIMIT is added when missing. Returns a compact table.",
+        "icon": "$(database)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cypher": {
+              "type": "string",
+              "description": "Cypher statement (read-only)"
+            },
+            "params": {
+              "type": "string",
+              "description": "Optional parameters as a JSON object string, referenced as $name"
+            }
+          },
+          "required": [
+            "cypher"
+          ]
+        }
+      },
+      {
+        "name": "riaf_kg_neighbors",
+        "displayName": "expand graph neighbours (RIAF · Knowledge stores (vector + graph))",
+        "toolReferenceName": "riafKgNeighbors",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Knowledge stores (vector + graph): expand graph neighbours. Needs riaf.integrations.knowledge.enabled.",
+        "modelDescription": "Return the neighbourhood of a node matched by {key: value} (optionally restricted to a label), up to depth 1-2, as a parameterised MATCH. Safer than hand-written Cypher.",
+        "icon": "$(database)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string",
+              "description": "Optional node label"
+            },
+            "key": {
+              "type": "string",
+              "description": "Property name to match, e.g. id or name"
+            },
+            "value": {
+              "type": "string",
+              "description": "Property value to match"
+            },
+            "depth": {
+              "type": "number",
+              "description": "Traversal depth 1-2 (default 1)"
+            },
+            "limit": {
+              "type": "number",
+              "description": "Max neighbours (default graphMaxRows)"
+            }
+          },
+          "required": [
+            "key",
+            "value"
+          ]
+        }
+      },
+      {
+        "name": "riaf_kg_schema",
+        "displayName": "describe graph schema (RIAF · Knowledge stores (vector + graph))",
+        "toolReferenceName": "riafKgSchema",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Knowledge stores (vector + graph): describe graph schema. Needs riaf.integrations.knowledge.enabled.",
+        "modelDescription": "Labels, relationship types and properties per label of the knowledge graph (db.labels / db.relationshipTypes / db.schema.nodeTypeProperties with fallbacks).",
+        "icon": "$(database)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
       }
     ],
     "commands": [
@@ -780,6 +1604,21 @@
       {
         "command": "riaf.setProviderKey",
         "title": "RIAF: Set Provider Key",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.setIntegrationCredentials",
+        "title": "RIAF: Set Integration Credentials",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.testIntegrations",
+        "title": "RIAF: Test Integrations",
+        "category": "RIAF"
+      },
+      {
+        "command": "riaf.showIntegrationAudit",
+        "title": "RIAF: Show Integration Audit Log",
         "category": "RIAF"
       }
     ],
@@ -1182,6 +2021,206 @@
           "type": "boolean",
           "default": true,
           "description": "Show real Claude Code token usage and cost for the open repository in the Usage tab, read locally from Claude Code's own transcripts under ~/.claude/projects. Nothing is sent anywhere."
+        },
+        "riaf.integrations.jira": {
+          "type": "object",
+          "default": {
+            "enabled": false
+          },
+          "description": "Jira integration. Credentials (Atlassian account email, API token / personal access token) are NOT settings — run \"RIAF: Set Integration Credentials\"; they live in the OS credential store.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable the Jira tools for @riaf, Copilot (#riaf…) and the Claude Code MCP server."
+            },
+            "baseUrl": {
+              "type": "string",
+              "description": "Jira base URL, e.g. https://acme.atlassian.net or https://jira.corp.example.com/jira"
+            },
+            "deployment": {
+              "type": "string",
+              "description": "cloud (REST v3, ADF) or datacenter (REST v2, wiki markup); auto picks cloud for *.atlassian.net",
+              "enum": [
+                "auto",
+                "cloud",
+                "datacenter"
+              ],
+              "default": "auto"
+            },
+            "defaultProject": {
+              "type": "string",
+              "description": "Project key used when a tool call omits project (create, boards)"
+            },
+            "maxResults": {
+              "type": "number",
+              "description": "Default page size for searches and sprint listings",
+              "default": 20
+            }
+          },
+          "additionalProperties": false
+        },
+        "riaf.integrations.confluence": {
+          "type": "object",
+          "default": {
+            "enabled": false
+          },
+          "description": "Confluence integration. Credentials (Atlassian account email, API token / personal access token) are NOT settings — run \"RIAF: Set Integration Credentials\"; they live in the OS credential store.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable the Confluence tools for @riaf, Copilot (#riaf…) and the Claude Code MCP server."
+            },
+            "baseUrl": {
+              "type": "string",
+              "description": "Confluence site URL, e.g. https://acme.atlassian.net (Cloud; /wiki is added automatically) or https://wiki.corp.example.com"
+            },
+            "deployment": {
+              "type": "string",
+              "description": "cloud (/wiki/rest/api) or datacenter (/rest/api); auto picks cloud for *.atlassian.net",
+              "enum": [
+                "auto",
+                "cloud",
+                "datacenter"
+              ],
+              "default": "auto"
+            },
+            "defaultSpace": {
+              "type": "string",
+              "description": "Space key used when a tool call omits space (search scope, create, title lookup)"
+            },
+            "maxResults": {
+              "type": "number",
+              "description": "Default page size for searches",
+              "default": 20
+            }
+          },
+          "additionalProperties": false
+        },
+        "riaf.integrations.gitlab": {
+          "type": "object",
+          "default": {
+            "enabled": false
+          },
+          "description": "GitLab integration. Credentials (Personal access token (api scope) or OAuth token) are NOT settings — run \"RIAF: Set Integration Credentials\"; they live in the OS credential store.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable the GitLab tools for @riaf, Copilot (#riaf…) and the Claude Code MCP server."
+            },
+            "baseUrl": {
+              "type": "string",
+              "description": "GitLab base URL, e.g. https://gitlab.bosch.com or https://gitlab.com",
+              "default": ""
+            },
+            "defaultProject": {
+              "type": "string",
+              "description": "Default project path 'group/subgroup/project'. Empty = resolve from the workspace git origin remote.",
+              "default": ""
+            },
+            "maxResults": {
+              "type": "number",
+              "description": "Default maximum number of list results per tool call",
+              "default": 20
+            },
+            "authKind": {
+              "type": "string",
+              "description": "'pat' sends PRIVATE-TOKEN (personal/project/group access token); 'oauth' sends Authorization: Bearer",
+              "enum": [
+                "pat",
+                "oauth"
+              ],
+              "default": "pat"
+            },
+            "apiVersion": {
+              "type": "string",
+              "description": "REST API version (fixed)",
+              "default": "v4"
+            }
+          },
+          "additionalProperties": false
+        },
+        "riaf.integrations.knowledge": {
+          "type": "object",
+          "default": {
+            "enabled": false
+          },
+          "description": "Knowledge stores (vector + graph) integration. Credentials (Vector store API key, Graph DB user, Graph DB password) are NOT settings — run \"RIAF: Set Integration Credentials\"; they live in the OS credential store.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable the Knowledge stores (vector + graph) tools for @riaf, Copilot (#riaf…) and the Claude Code MCP server."
+            },
+            "vectorKind": {
+              "type": "string",
+              "description": "Vector store backend",
+              "enum": [
+                "none",
+                "qdrant",
+                "weaviate",
+                "chroma"
+              ],
+              "default": "none"
+            },
+            "vectorUrl": {
+              "type": "string",
+              "description": "Vector store base URL (Qdrant http://host:6333, Weaviate http://host:8080, Chroma http://host:8000)",
+              "default": ""
+            },
+            "vectorCollection": {
+              "type": "string",
+              "description": "Qdrant collection / Weaviate class name / Chroma collection name or id",
+              "default": ""
+            },
+            "vectorTextField": {
+              "type": "string",
+              "description": "Payload/property that holds the chunk text",
+              "default": "text"
+            },
+            "vectorTopK": {
+              "type": "number",
+              "description": "Default number of hits for kb_search",
+              "default": 8
+            },
+            "graphKind": {
+              "type": "string",
+              "description": "Graph store backend",
+              "enum": [
+                "none",
+                "neo4j"
+              ],
+              "default": "none"
+            },
+            "graphUrl": {
+              "type": "string",
+              "description": "Neo4j HTTP URL, e.g. http://host:7474",
+              "default": ""
+            },
+            "graphDatabase": {
+              "type": "string",
+              "description": "Neo4j database name",
+              "default": "neo4j"
+            },
+            "graphMaxRows": {
+              "type": "number",
+              "description": "Row cap enforced on every graph query",
+              "default": 50
+            }
+          },
+          "additionalProperties": false
+        },
+        "riaf.integrations.shareCredentialsWithClaudeCode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also write integration credentials to ~/.riaf/credentials.json (mode 0600) so the RIAF MCP server used by Claude Code can call Jira / Confluence / GitLab / knowledge stores. Off = Claude Code needs RIAF_INTEGRATION_* environment variables instead."
+        },
+        "riaf.agent.approveIntegrationWrites": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask before an integration tool changes data (create Jira issue, comment on a merge request, update a Confluence page, …). Every write is recorded in .riaf/audit.jsonl either way."
         }
       }
     },
@@ -1249,6 +2288,15 @@
         },
         {
           "command": "riaf.setProviderKey"
+        },
+        {
+          "command": "riaf.setIntegrationCredentials"
+        },
+        {
+          "command": "riaf.testIntegrations"
+        },
+        {
+          "command": "riaf.showIntegrationAudit"
         }
       ]
     },

@@ -16,7 +16,7 @@ import { profileCharCap, toGlobalSettings } from './agentLimits.js';
 import { appendMemory, extractRememberedFact, memoryPromptBlock, readMemory } from './memory.js';
 import type { RiafSettings } from './config.js';
 import type { ModelTransport, ToolCall, TransportMessage } from './modelTransport.js';
-import { COMMAND_TOOLS, EDIT_TOOLS, READ_ONLY_TOOLS, TOOL_SPECS, executeTool, type ToolContext } from './tools/toolRegistry.js';
+import { COMMAND_TOOLS, EDIT_TOOLS, READ_ONLY_TOOLS, TOOL_SPECS, executeTool, integrationToolSpecs, type ToolContext } from './tools/toolRegistry.js';
 import { listAgentMcpTools } from './mcpClient.js';
 import { createTransport } from './modelTransport.js';
 import { loadHooks } from './tools/hooks.js';
@@ -137,13 +137,17 @@ const MODE_SYSTEM: Record<AgentMode, string> = {
 	verify: 'MODE: verify. Run the project test/typecheck command(s) and report results; propose (do not apply) fixes.',
 };
 
-const toolsForMode = (mode: AgentMode, s: RiafSettings) => TOOL_SPECS.filter(t => {
-	if (t.name === 'explore' && !s.agent.exploreSubagent) { return false; }
-	if (mode === 'plan' || mode === 'explain') { return READ_ONLY_TOOLS.has(t.name); }
-	if (mode === 'verify') { return READ_ONLY_TOOLS.has(t.name) || COMMAND_TOOLS.has(t.name); }
-	if (!s.agent.allowRunCommand && COMMAND_TOOLS.has(t.name)) { return false; }
-	return true;
-});
+const toolsForMode = (mode: AgentMode, s: RiafSettings) => [
+	...TOOL_SPECS.filter(t => {
+		if (t.name === 'explore' && !s.agent.exploreSubagent) { return false; }
+		if (mode === 'plan' || mode === 'explain') { return READ_ONLY_TOOLS.has(t.name); }
+		if (mode === 'verify') { return READ_ONLY_TOOLS.has(t.name) || COMMAND_TOOLS.has(t.name); }
+		if (!s.agent.allowRunCommand && COMMAND_TOOLS.has(t.name)) { return false; }
+		return true;
+	}),
+	// enterprise integrations the developer switched on (Jira, Confluence, GitLab, knowledge stores); writes only in agent mode
+	...integrationToolSpecs({ readOnly: mode !== 'agent' }),
+];
 
 /* ───────────────────────────── the loop ───────────────────────────── */
 

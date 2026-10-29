@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { readIntegrationsConfig } from './integrations/host.js';
+import { writeIntegrationsConfig } from './integrations/mcpConfig.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { IndexManager } from './indexManager.js';
@@ -104,6 +106,8 @@ export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: Ind
 		},
 	};
 	writeFileSync(mcpPath, JSON.stringify(mcp, null, 2) + '\n');
+	// enabled integrations + base URLs for the MCP server (no credentials; those come from env vars or ~/.riaf/credentials.json)
+	writeIntegrationsConfig(root, readIntegrationsConfig());
 
 	// 2. plugin files → .claude/
 	const src = join(ctx.extensionPath, 'plugin');

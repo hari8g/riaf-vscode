@@ -25,6 +25,7 @@ Everything runs locally and offline by default. Nothing is downloaded at install
 6. [The `@riaf` agent and its slash commands](#6-the-riaf-agent)
 7. [Runs, ledger and verification (`/run`)](#7-runs-ledger-and-verification)
 8. [Claude Code integration](#8-claude-code-integration)
+8a. [Enterprise integrations: Jira, Confluence, GitLab, knowledge stores](#8a-enterprise-integrations)
 9. [Editor features](#9-editor-features)
 10. [Settings panel](#10-settings-panel)
 11. [Models and providers](#11-models-and-providers)
@@ -188,6 +189,39 @@ Restart `claude` in that folder (trust the project MCP server), then `/mcp` show
 
 Typical session: `/riaf-run add exponential backoff to the charger status poller` → Claude creates the ledger, takes `plan_next`, edits with its own tools, calls `verify_subtask`, marks it, repeats, runs the critic; `/riaf-status` any time; `/riaf-resume` after a restart. Commit `.mcp.json`, `.claude/` and `CLAUDE.md` so the team gets it.
 
+## 8a. Enterprise integrations
+
+RIAF's agentic framework can ground the agent in the systems around the code — and act in them, with approval. Four adapters ship built in; each is **off until you enable it** (nothing is probed, no tool is offered to the model while off).
+
+| Adapter | Read tools (ground the agent) | Write tools (ask first, audited) |
+|---|---|---|
+| **Jira** (Cloud *and* Data Center; auto-detected) | `jira_search` (JQL), `jira_get_issue`, `jira_get_comments`, `jira_list_transitions`, `jira_sprint`, `jira_my_issues` | `jira_create_issue`, `jira_transition`, `jira_comment`, `jira_assign`, `jira_link_issues` |
+| **Confluence** (Cloud / Data Center) | `confluence_search` (CQL or text), `confluence_get_page` (storage → text), `confluence_children`, `confluence_page_history`, `confluence_attachments` | `confluence_create_page`, `confluence_update_page` (version bump), `confluence_comment`, `confluence_add_label` |
+| **GitLab** (self-hosted / Enterprise / gitlab.com) | `gitlab_project`, `gitlab_list_mrs`, `gitlab_get_mr`, `gitlab_mr_discussions`, `gitlab_pipelines`, `gitlab_pipeline`, `gitlab_job_log`, `gitlab_file`, `gitlab_blame`, `gitlab_search`, `gitlab_commits`, `gitlab_issues`, `gitlab_get_issue` | `gitlab_create_branch`, `gitlab_create_mr`, `gitlab_mr_comment` (inline with file+line), `gitlab_mr_approve`, `gitlab_pipeline_retry`, `gitlab_pipeline_cancel`, `gitlab_issue_comment`, `gitlab_create_issue` |
+| **Knowledge stores** — vector (Qdrant, Weaviate, Chroma) + graph (Neo4j) | `kb_search` (embeddings via the gateway, or BM25/`query_texts` fallback), `kb_get`, `kb_collections`, `kg_query` (read-only Cypher: write clauses rejected, `LIMIT` enforced), `kg_neighbors`, `kg_schema` | — (read-only by design) |
+
+**Where the tools show up**
+
+- `@riaf` — enabled adapters' tools join the agent's tool set; in `/plan`, `/explain` and `/verify` only the read tools.
+- **Copilot Chat** — every read tool is a language-model tool: `#riafJiraSearch`, `#riafGitlabGetMr`, `#riafConfluenceGetPage`, `#riafKbSearch`, … (writes stay on `@riaf`, where they can ask first).
+- **Claude Code** — the `riaf` MCP server registers the enabled tools too (reads *and* writes; Claude Code shows its own permission prompt). It reads the enabled flags and URLs from `.riaf/integrations.json` (written automatically, no secrets) — restart `claude` after enabling an adapter.
+
+**Setting up** (*RIAF: Open Settings → Integrations*, or `riaf.integrations.<id>` in settings.json)
+
+1. Toggle the adapter on, fill in `baseUrl` (and `defaultProject` / `defaultSpace` / collection names as the fields describe).
+2. **Set…** credentials — or `RIAF: Set Integration Credentials`. They go to the OS credential store (VS Code SecretStorage) under `riaf.integration.<id>.<key>`; **never** into settings files. Jira/Confluence Cloud: Atlassian email + API token (Basic). Data Center: personal access token (Bearer). GitLab: PAT with `api` scope (`read_api` for read-only use). Knowledge: vector-store API key, Neo4j user/password.
+3. **Test connection** — probes `/myself`, `/space`, `/user` + project, collections / `RETURN 1`; Doctor prints the same lines.
+4. For Claude Code, either set `RIAF_INTEGRATION_<ID>_<KEY>` environment variables (e.g. `RIAF_INTEGRATION_JIRA_TOKEN`, `RIAF_INTEGRATION_GITLAB_TOKEN`) where you start `claude`, or turn on **Share credentials with Claude Code** (`riaf.integrations.shareCredentialsWithClaudeCode`) which mirrors the stored tokens to `~/.riaf/credentials.json` (mode 0600, in your home, outside any repo).
+
+**Safety**
+
+- Write tools open a modal dialog naming the action, the system and the (redacted) arguments — `riaf.agent.approveIntegrationWrites` (default on); "Run and stop asking this session" is per adapter and per VS Code session.
+- Every write — approved, rejected or failed, from `@riaf`, Copilot or Claude Code — is appended to `<repo>/.riaf/audit.jsonl` (who, what, redacted args, outcome). *RIAF: Show Integration Audit Log* renders it; the Integrations tab shows the last 25.
+- All calls go through the same proxied `fetch` as the gateway (corporate proxy / bridge / `noProxy`), with a per-adapter rate limiter, 30 s timeouts and 12 k-character result clipping. Error messages are scrubbed of anything that looks like a token or password before they reach the model.
+- `kg_query` refuses `CREATE`, `MERGE`, `DELETE`, `DETACH`, `SET`, `REMOVE`, `DROP`, `CALL dbms…`, `apoc.create/refactor/periodic` and `LOAD CSV` (outside string literals) and appends `LIMIT riaf.integrations.knowledge.graphMaxRows` when absent.
+
+Adapters are plain TypeScript modules implementing `IntegrationAdapter` (`src/integrations/adapter.ts`); adding one is a file plus `node scripts/sync-integrations.mjs`, which regenerates the settings schema and Copilot tool contributions in `package.json`.
+
 ## 9. Editor features
 
 - **Edit Selection** (`Ctrl+Alt+K`, or the lightbulb *RIAF: Edit selection*): type what should change; RIAF rewrites the selection using fill-in-the-middle with codebase context, shown as a diff to accept.
@@ -346,6 +380,9 @@ RIAF search instead of blind reads · duplicate-read suppression across turns ·
 | Settings panel says *unknown request …* right after an upgrade | The panel is the new build but the extension host is still the old one — *Developer: Reload Window* |
 | Claude Code's `riaf` server stopped after upgrading RIAF, or *Tools served* stays at 0 | `.mcp.json` pointed at the old versioned folder. Run **RIAF: Set up Claude Code** once; from now on it uses the version-independent launcher. Doctor and the Claude Code tab flag a stale `.mcp.json` |
 | Usage shows zeros although I use RIAF in Claude Code / Copilot | Expected for the top two blocks: they count calls RIAF makes itself. Look at **Tools served** and **Claude Code · this repo** lower on the same tab (needs `riaf.usage.readClaudeCodeTranscripts`, default on). Doctor prints the transcript folder it found |
+| Integration tool answers *integration is off* | Enable it under *Settings → Integrations* (`riaf.integrations.<id>.enabled`). For Claude Code also restart `claude`: the MCP server reads `.riaf/integrations.json` at start |
+| Integration *401 … credentials rejected* | `RIAF: Set Integration Credentials`; Cloud Atlassian needs email **and** API token; GitLab PAT needs the `api` scope. In Claude Code the token comes from `RIAF_INTEGRATION_*` env or `~/.riaf/credentials.json` (Share credentials toggle) |
+| `kb_search`: *embeddings are required* | Qdrant has no server-side text search — turn on `riaf.embeddings.enabled` with a gateway, or use Weaviate (BM25) / Chroma (`query_texts`) |
 | Hook seems ignored | Hooks match tool names (preTool) / paths (postEdit) by regex; a hook that fails to launch now blocks and says why |
 
 ## 18. Files RIAF creates
