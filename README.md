@@ -194,6 +194,15 @@ Restart Claude Code in that folder. Then:
 | `/riaf-context src/orderService.ts` | Imports, importers, covering tests, project commands for that file |
 | `/riaf-verify` | Runs the narrowest covering test command, fixes once, reports |
 
+### RIAF 2.0: context packs and tool-call governance
+
+Setup also installs the RIAF 2.0 layer (or run `riaf init --host claude` from a terminal):
+
+- **Context Packs.** On the first prompt of a session the `UserPromptSubmit` hook compiles a pack for the task — ranked files, symbols, tests, git history (related commits, owners as roles, hot spots, design decisions), repo conventions, a plan skeleton and a verification checklist — and injects it. It is also at `.claude/riaf/pack.md` and `riaf://pack/current` (sub-agents: `riaf://pack/current?scope=src/payments/`). Claude can call `riaf_compile` itself, record a plan with `riaf_compile plan=[…]`, or append failing test output with `stage: "verify"`.
+- **Retrieval before tools.** `riaf_lookup` (file / range / symbol / directory / search), `riaf_expand` (structural + co-change neighbourhood in one call) and `riaf_history` (history card, `since` a tag, hot spots) answer from the index.
+- **Governance hooks.** `.claude/hooks/riaf-govern.mjs` sends each `Read`/`Grep`/`Glob`/`LS`/`Bash` call to the MCP server's governor: re-reads of unchanged files and repeated searches are answered from the index or cache instead of running, loops are flagged, neighbours that usually change together are prefetched as outlines, edits re-index the file, and `.riaf/policy.yaml` sets per-phase call/token budgets (soft ceiling → reflection prompt, hard ceiling → plan first). The hook fails open; `RIAF_NO_GUARD=1` turns it off for a session. `riaf_governor_status` shows calls avoided and tokens saved.
+- **Portable packs.** `riaf pack --intent "…" --format md|json|claude|copilot|openai|gemini|agents-md --budget 32k`; `riaf eval` scores pack recall/precision, co-change recall@5 and compile latency against the repo's own history.
+
 Commit `.mcp.json`, `.claude/` and `CLAUDE.md` so the whole team gets it. The MCP server also runs standalone for any MCP client:
 
 ```sh

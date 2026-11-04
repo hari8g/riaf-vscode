@@ -125,6 +125,9 @@ export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: Ind
 	const claudeMd = join(root, 'CLAUDE.md');
 	const existing = existsSync(claudeMd) ? readFileSync(claudeMd, 'utf8') : undefined;
 	writeFileSync(claudeMd, mergeClaudeMd(existing, rulesSrc, projectRules));
+	// RIAF 2.0: governance hook client, policy file and the retrieval-before-tool block in CLAUDE.md.
+	const { writeClaudeGovernance } = await import('./claudeHooks.js');
+	writeClaudeGovernance(root);
 
 	// 3. network: proxy + CA for Claude Code itself (user-level ~/.claude/settings.json)
 	const s = readSettings();

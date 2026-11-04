@@ -45,3 +45,6 @@ export { URI, generateUuid, isWindows, removeAnsiEscapeCodes } from './shim/vsBa
 
 // ports
 export * from './ports.js';
+
+// RIAF 2.0 tool-call governance (Pillar 3)
+export * from './governor/index.js';

@@ -4,16 +4,20 @@
  * VS Code extension exposes to Copilot. Shares the SQLite index file with the extension, so one
  * index serves both. Read-only: editing stays with the client's own tools.
  *
- *   node dist/mcp.mjs --workspace /path/to/repo [--db /path/to/index.sqlite] [--reindex]
+ *   node dist/mcp.mjs --workspace /path/to/repo [--db /path/to/index.sqlite] [--reindex] [--no-govern] [--no-guard]
+ *
+ * RIAF 2.0: also serves riaf_compile / riaf_lookup / riaf_expand / riaf_history / riaf_search, the
+ * riaf://pack/current resources, and a local governor endpoint for the Claude Code hooks (.riaf/governor.json).
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { RiafIndex, setSqliteModuleLoader, setTreeSitterWasmDir } from '@bosch-mps/riaf-core';
+import { RiafIndex, Riaf2, setSqliteModuleLoader, setTreeSitterWasmDir } from '@bosch-mps/riaf-core';
+import { Riaf2Host } from './riaf2Host.js';
 import { recordToolCall, toolStatsPathFor } from './toolStats.js';
 import { FileLedger, nextReadySubtasks, renderLedger, verifySubtask } from '@bosch-mps/riaf-engine';
 import { executeOrgTool, executeSearchTool, ORG_TOOL_SPECS, SEARCH_TOOL_SPECS } from './tools/orgTools.js';
@@ -42,7 +46,21 @@ if (!index.getStatus().indexed || args.includes('--reindex')) {
 }
 index.startWatching();
 
-const server = new McpServer({ name: 'riaf', version: '0.3.0' });
+// RIAF 2.0: history mining, summaries, pack compiler and the tool-call governor share this index.
+const riaf2 = Riaf2.fromIndex(index, { log, llmSummaries: false });
+const host = new Riaf2Host(riaf2, { host: 'claude-code', log, governEnabled: !args.includes('--no-guard') });
+void (async () => {
+	try {
+		const mined = await riaf2.history?.mine();
+		const sums = await riaf2.summaries.build();
+		log(`history: ${mined?.totalCommits ?? 0} commits (${mined?.newCommits ?? 0} new); summaries: ${sums.regenerated} regenerated`);
+	} catch (e) { log(`history/summaries skipped: ${String(e)}`); }
+})();
+if (!args.includes('--no-govern')) {
+	host.startGovernor().then(ep => log(`governor endpoint ${ep}`), e => log(`governor endpoint not started: ${String(e)}`));
+}
+
+const server = new McpServer({ name: 'riaf', version: '0.4.0' });
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] });
 
 // "Tools served" metrics for the Usage tab: wrap registration so every call is counted (best-effort, never fails the call).
@@ -105,6 +123,94 @@ server.tool('get_indexing_report', 'Markdown report of what is indexed (language
 
 server.tool('reindex', 'Rebuild the index (use after large refactors or branch switches).', { force: z.boolean().optional() },
 	async ({ force }) => text(JSON.stringify(await index.reindex({ force: force ?? true }))));
+
+// ── RIAF 2.0 tools: compile → lookup / expand / history / search; governance status ─────────────
+server.tool('riaf_compile',
+	'Compile a Context Pack for a task: the ranked, token-budgeted files, symbols, tests, history and conventions needed, each with why it is included. Call once at the start of a task (or with stage "verify" + appendOutput after a failing run; or plan=[steps] to record your plan for sub-agents). Files listed under "Already in context" need no further reads.',
+	{
+		request: z.string().optional().describe('The task in natural language (omit with plan= to update the current pack)'),
+		budget: z.number().optional().describe('Token budget, default 24000'),
+		scope: z.string().optional().describe('Path prefix for a sub-agent child pack'),
+		stage: z.enum(['explore', 'plan', 'implement', 'verify']).optional(),
+		appendOutput: z.string().optional().describe('Stage output (e.g. failing tests) to append to the previous pack'),
+		plan: z.array(z.string()).optional().describe('Plan steps to store in the current pack'),
+		format: z.enum(['claude', 'markdown', 'json', 'copilot', 'openai', 'gemini', 'agents-md']).optional(),
+		fresh: z.boolean().optional(),
+	},
+	async ({ request, budget, scope, stage, appendOutput, plan, format, fresh }) => {
+		if (plan?.length && !request) {
+			const p = host.setPlan(plan);
+			return text(p ? `Plan recorded in pack ${p.pack_id.slice(0, 8)} (${p.plan_skeleton.length} steps). Sub-agents reading riaf://pack/current inherit it.` : 'No current pack — call riaf_compile with a request first.');
+		}
+		if (!request) { return { ...text('riaf_compile needs a request (or plan=[…] to update the current pack).'), isError: true }; }
+		const { pack, text: out } = await host.compile(request, { budget, scope, stage, appendOutput, fresh, format });
+		if (plan?.length) { host.setPlan(plan); }
+		log(`compiled pack ${pack.pack_id.slice(0, 8)}: ${pack.items.length} items, ${pack.budget.used_tokens}/${pack.budget.max_tokens} tokens`);
+		return text(out);
+	});
+
+server.tool('riaf_lookup',
+	'Answer a read from the index before using Read/Grep/LS: a file (optionally a line range), a symbol definition, a directory listing, or an indexed search. Returns the content or a miss with the best indexed alternatives.',
+	{ path: z.string().optional(), startLine: z.number().optional(), endLine: z.number().optional(), symbol: z.string().optional(), dir: z.string().optional(), query: z.string().optional(), limit: z.number().optional() },
+	async ({ path, startLine, endLine, symbol, dir, query, limit }) => {
+		const r = await riaf2.lookup({ path, range: path && startLine ? [startLine, endLine ?? startLine + 80] : undefined, symbol, dir, query, limit });
+		const head = r.hit ? `[RIAF ${r.kind}${r.path ? ` ${r.path}` : ''}${r.blob ? ` blob ${r.blob.slice(0, 8)}` : ''}]` : '[RIAF miss]';
+		return text(`${head}\n${r.content}${r.alternatives?.length ? `\nIndexed alternatives:\n${r.alternatives.map(a => `- ${a}`).join('\n')}` : ''}`);
+	});
+
+server.tool('riaf_expand',
+	'Structural + history neighbourhood of a file or symbol in one call (outline, imports, importers, tests, callers, callees, co-changing files). Use instead of walking directories. node = "path" or "path#Symbol".',
+	{ node: z.string(), hops: z.number().optional() },
+	async ({ node, hops }) => text((await riaf2.expand(node, hops ?? 1)).text));
+
+server.tool('riaf_history',
+	'Git-history intelligence: a history card for a file (creation, intents, recent changes, owners as roles, hot-spot flag, co-change partners); or commits since a ref/date under a path; or the hot spots.',
+	{ path: z.string().optional(), since: z.string().optional().describe('Tag, branch, sha or ISO date'), pathPrefix: z.string().optional(), hotspots: z.boolean().optional() },
+	async ({ path, since, pathPrefix, hotspots }) => {
+		if (!riaf2.history) { return text('History is disabled.'); }
+		await riaf2.history.mine().catch(() => undefined);
+		if (since) {
+			const rows = await riaf2.history.changedSince(since, pathPrefix ?? path ?? '');
+			return text(rows.length ? rows.map(c => `${new Date(c.ts).toISOString().slice(0, 10)} ${c.sha.slice(0, 8)} [${c.intent}] ${c.why}\n  ${c.files.slice(0, 8).join(', ')}`).join('\n') : `No commits since ${since}.`);
+		}
+		if (hotspots || !path) {
+			return text(riaf2.history.hotspots(15, pathPrefix ?? '').map(h => `${h.path}: score ${h.score}, ${h.commits365} commits/12 mo, fix ratio ${Math.round(h.fixRatio * 100)}%`).join('\n') || 'No history mined.');
+		}
+		return text(riaf2.historyCard(path)?.text ?? 'No history for this path.');
+	});
+
+server.tool('riaf_search',
+	'Search the index: mode "hybrid" (BM25 + embeddings), "lexical" (BM25 only) or "structural" (symbol definitions).',
+	{ query: z.string(), mode: z.enum(['hybrid', 'lexical', 'structural']).optional(), limit: z.number().optional(), pathPrefix: z.string().optional() },
+	async ({ query, mode, limit, pathPrefix }) => {
+		const hits = await riaf2.search(query, { mode, limit, pathPrefix }) as Array<Record<string, unknown>>;
+		if (!hits.length) { return text('No matches.'); }
+		return text(hits.map(h => 'signature' in h ? `${h.kind} ${h.name} — ${h.filePath}:${h.startLine}\n  ${String(h.signature).replace(/\s+/g, ' ').slice(0, 160)}` : `### ${h.filePath}:${h.startLine}-${h.endLine}\n${h.content}`).join('\n\n'));
+	});
+
+server.tool('riaf_governor_status', 'Tool-call governance metrics: calls proposed / served from index / executed / blocked, tokens saved, cache hit rate, prefetch precision.', {},
+	async () => text(host.statusText()));
+
+server.registerResource('riaf-pack-current', 'riaf://pack/current', { title: 'Current RIAF Context Pack', mimeType: 'text/markdown' },
+	async uri => {
+		const pack = riaf2.currentPack();
+		return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: pack ? riaf2.render(pack, 'claude') : 'No pack compiled yet — call riaf_compile.' }] };
+	});
+server.registerResource('riaf-pack-scoped', new ResourceTemplate('riaf://pack/current{?scope}', { list: undefined }), { title: 'Child pack for a path scope (sub-agents)', mimeType: 'text/markdown' },
+	async (uri, vars) => {
+		const scope = Array.isArray(vars.scope) ? vars.scope[0] : vars.scope;
+		const pack = riaf2.currentPack(scope ? decodeURIComponent(scope) : undefined);
+		return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: pack ? riaf2.render(pack, 'claude') : 'No pack compiled yet — call riaf_compile.' }] };
+	});
+server.registerResource('riaf-conventions', 'riaf://repo/conventions', { title: 'Repository conventions', mimeType: 'text/markdown' },
+	async uri => ({ contents: [{ uri: uri.href, mimeType: 'text/markdown', text: await riaf2.conventionsText() }] }));
+server.registerResource('riaf-architecture', 'riaf://repo/architecture', { title: 'Repository architecture', mimeType: 'text/markdown' },
+	async uri => ({ contents: [{ uri: uri.href, mimeType: 'text/markdown', text: await riaf2.architectureText() }] }));
+server.registerPrompt('riaf-briefing', { title: 'RIAF briefing', description: 'Compile a Context Pack for a task and brief the model with it.', argsSchema: { task: z.string(), budget: z.string().optional() } },
+	async ({ task, budget }) => {
+		const { text: out } = await host.compile(task, { budget: budget ? Number(budget) || undefined : undefined });
+		return { messages: [{ role: 'user', content: { type: 'text', text: `${out}\n\n---\nTask: ${task}\nStart from the pack above; use riaf_lookup / riaf_expand before reading other files.` } }] };
+	});
 
 // Search + org-index + git tools: same specs and formatting as the VS Code agent (tools/orgTools.ts).
 const zodFromJsonSchema = (schema: Record<string, unknown>): Record<string, z.ZodTypeAny> => {
@@ -222,7 +328,7 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 log(`ready — ${index.getStatus().chunks} chunks for ${workspaceRoot}`);
 
-const shutdown = async () => { await index.close().catch(() => { }); process.exit(0); };
+const shutdown = async () => { await host.stop().catch(() => { }); await index.close().catch(() => { }); process.exit(0); };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 process.stdin.on('close', shutdown);

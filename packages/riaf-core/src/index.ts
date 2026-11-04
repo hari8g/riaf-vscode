@@ -162,3 +162,19 @@ export {
 	type PipelineJob,
 	type PipelineStage,
 } from './gitlabCiIndexer.js';
+
+// ── RIAF 2.0: history, intent compilation, context packs ────────────────────
+export { V2Store, V2_SCHEMA_VERSION } from './v2/store.js';
+export {
+	GitHistory, classifyCommit, extractTickets, extractWhy, extractDecisionSentences, noiseReason, parseRenamePath, hashAuthor, formatHistoryCard,
+	type HistoryOptions, type IntentClass, type CommitRow, type CoChangeNeighbor, type OwnerInfo, type Hotspot, type CommitSummary, type Decision, type HistoryCard, type MineResult,
+} from './v2/gitHistory.js';
+export { parseIntent, splitIdentifier, type ParsedIntent, type IntentType, type IntentEntity } from './v2/intent.js';
+export { PACK_SCHEMA_VERSION, validatePack, type ContextPack, type PackItem, type PackItemKind, type PackItemForm } from './v2/packTypes.js';
+export { PackCompiler, rebudget, slicePack, mergeRanges, RANKER_VERSION, type CompileOptions } from './v2/compiler.js';
+export { render, renderMarkdown, claudeMdFragment, upsertClaudeMd, PROTOCOL, RENDER_TARGETS, type RenderTarget } from './v2/render.js';
+export { deriveArchitecture, formatArchitecture, formatConventions, generatedPatternsFrom, globToRegExp, manifestKind, type ArchitectureFacts, type PackageInfo } from './v2/architecture.js';
+export { SummaryTree, type Summarize } from './v2/summaries.js';
+export { estimateTokens, parseBudget } from './v2/tokens.js';
+export { runEval, formatEvalReport, type EvalReport, type EvalSample, type EvalOptions } from './v2/eval.js';
+export { Riaf2, blobHash, type Riaf2Config, type LookupResult, type ExpandResult } from './v2/riaf2.js';
