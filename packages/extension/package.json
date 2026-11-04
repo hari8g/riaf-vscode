@@ -154,6 +154,67 @@
         }
       },
       {
+        "name": "riaf_context",
+        "displayName": "Context pack (RIAF)",
+        "toolReferenceName": "riafPack",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Compile a ranked, token-budgeted context pack (files, tests, history, conventions) for a task.",
+        "modelDescription": "Compile a RIAF Context Pack for a task: the files, symbols, tests, git history, decisions and repo conventions needed, ranked and fitted to a token budget, each with the reason it is included. Call once at the start of a task instead of exploring file by file; files under 'Already in context' need no further reads.",
+        "icon": "$(package)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "request": {
+              "type": "string",
+              "description": "The task in natural language"
+            },
+            "budget": {
+              "type": "number",
+              "description": "Token budget, default 8000"
+            },
+            "scope": {
+              "type": "string",
+              "description": "Optional path prefix"
+            }
+          },
+          "required": [
+            "request"
+          ]
+        }
+      },
+      {
+        "name": "riaf_lookup",
+        "displayName": "Lookup (RIAF)",
+        "toolReferenceName": "riafLookup",
+        "canBeReferencedInPrompt": true,
+        "userDescription": "Answer a file, range, symbol, directory or search question from the RIAF index.",
+        "modelDescription": "Answer a read from the RIAF index instead of reading files directly: a file (optionally a line range), a symbol's definition, a directory listing, or an indexed search. Returns the content or a miss with indexed alternatives.",
+        "icon": "$(search)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "startLine": {
+              "type": "number"
+            },
+            "endLine": {
+              "type": "number"
+            },
+            "symbol": {
+              "type": "string"
+            },
+            "dir": {
+              "type": "string"
+            },
+            "query": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      {
         "name": "riaf_read_file",
         "displayName": "Read file (RIAF)",
         "toolReferenceName": "riafRead",
@@ -1620,6 +1681,18 @@
         "command": "riaf.showIntegrationAudit",
         "title": "RIAF: Show Integration Audit Log",
         "category": "RIAF"
+      },
+      {
+        "command": "riaf.compilePack",
+        "title": "RIAF: Compile pack for selection",
+        "category": "RIAF",
+        "icon": "$(package)"
+      },
+      {
+        "command": "riaf.exportPack",
+        "title": "RIAF: Export pack",
+        "category": "RIAF",
+        "icon": "$(export)"
       }
     ],
     "configuration": {
@@ -2297,6 +2370,12 @@
         },
         {
           "command": "riaf.showIntegrationAudit"
+        },
+        {
+          "command": "riaf.compilePack"
+        },
+        {
+          "command": "riaf.exportPack"
         }
       ]
     },

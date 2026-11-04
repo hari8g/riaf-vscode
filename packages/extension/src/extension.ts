@@ -5,6 +5,7 @@ import { ProxyBridgeManager } from './proxyBridgeManager.js';
 import { readSettings, usesGateway } from './config.js';
 import { IndexManager } from './indexManager.js';
 import { registerLmTools } from './lmTools.js';
+import { registerPackFeatures } from './packCommands.js';
 import { appendMemory } from './memory.js';
 import { registerEditorExtras } from './editorExtras.js';
 import { createTransport, setProviderSecrets, type ModelTransport } from './modelTransport.js';
@@ -51,6 +52,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 	}));
 
 	registerLmTools(ctx, indexes);
+	registerPackFeatures(ctx, indexes);
 	registerChatParticipant(ctx, indexes, usage);
 	registerEditorExtras(ctx, indexes, usage, getTransport);
 

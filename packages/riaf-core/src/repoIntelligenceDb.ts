@@ -632,6 +632,25 @@ export class RepoIntelligenceDb {
 		return this._handle;
 	}
 
+	/**
+	 * Raw SQL access for extension layers (RIAF 2.0 history, packs, tool cache) that keep their own
+	 * tables in the same database file. Writes mark the image dirty so the debounced persist picks them up.
+	 */
+	readonly raw = {
+		exec: (sql: string): void => { this._getDb().exec(sql); this._markDirty(); },
+		run: (sql: string, params: Params = []): void => { this._getDb().run(sql, params); this._markDirty(); },
+		all: <T = Record<string, SqlValue>>(sql: string, params: Params = []): T[] => this._getDb().all<T>(sql, params),
+		get: <T = Record<string, SqlValue>>(sql: string, params: Params = []): T | undefined => this._getDb().get<T>(sql, params),
+		/** Run `fn` inside one transaction (nested calls join the outer one). */
+		tx: <T>(fn: () => T): T => {
+			const db = this._getDb();
+			if (db.inTransaction()) return fn();
+			db.exec('BEGIN');
+			try { const r = fn(); db.exec('COMMIT'); this._markDirty(); return r; }
+			catch (e) { try { db.exec('ROLLBACK'); } catch { /* ignore */ } throw e; }
+		},
+	};
+
 	// ── schema migration ─────────────────────────────────────────────────────
 
 	private _migrate(db: SqliteHandle): void {

@@ -13,6 +13,7 @@ import { renderLedger } from './engine.js';
 import { applyPatches, parsePatchDocument } from './patches.js';
 import type { LlmCall } from './planner.js';
 import { execFile } from 'node:child_process';
+import { executeRiaf2, RIAF2_COMMANDS } from './riaf2Cli.js';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
@@ -46,6 +47,7 @@ export function gatewayCall(url: string, model: string, apiKey?: string): LlmCal
 export async function executeCli(argv: string[], io: CliIo = {}): Promise<number> {
 	const log = io.log ?? (line => console.log(line));
 	const [cmd, ...rest] = argv;
+	if ((RIAF2_COMMANDS as readonly string[]).includes(cmd)) { return executeRiaf2(cmd, rest, { log, cwd: io.cwd }); }
 	const repo = resolve(flag(rest, 'repo') ?? io.cwd ?? process.cwd());
 	const ledger = new FileLedger(repo);
 	if (cmd === 'status') {
@@ -56,7 +58,7 @@ export async function executeCli(argv: string[], io: CliIo = {}): Promise<number
 		log(renderLedger(run));
 		return run.status === 'done' ? 0 : 1;
 	}
-	if (cmd !== 'run' && cmd !== 'resume') { log('usage: riaf run "<task>" --repo . [--gateway URL --model NAME] | riaf status | riaf resume [id]'); return 2; }
+	if (cmd !== 'run' && cmd !== 'resume') { log('usage: riaf run "<task>" --repo . [--gateway URL --model NAME] | riaf status | riaf resume [id]\n       riaf index | search <q> | pack --intent "<task>" [--format md|json|claude|copilot|openai|gemini|agents-md] [--budget 32k] | history <path> | eval | init --host claude'); return 2; }
 	const goal = cmd === 'run' ? (rest.find(a => !a.startsWith('--') && rest[rest.indexOf(a) - 1] !== '--repo' && rest[rest.indexOf(a) - 1] !== '--gateway' && rest[rest.indexOf(a) - 1] !== '--model') ?? '') : '';
 	if (cmd === 'run' && !goal) { log('riaf run needs a task string'); return 2; }
 	const gateway = flag(rest, 'gateway');

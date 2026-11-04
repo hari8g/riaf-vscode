@@ -13,6 +13,8 @@ export { applyPatches, parsePatchDocument } from './patches.js';
 export { coChangeCounts, iacTopology, parseGitNameOnly, pipelineBlastRadius, scanSecurity, DEFAULT_SECURITY_RULES } from './analysis.js';
 export { applySearchBoosts, conventionalTestPaths, decorateGraph, packageOf, readInteractionList, rememberInteraction, renderContextDocument, sourceForTest, testSourceMap } from './intelligence.js';
 export { executeCli } from './cli.js';
+export { executeRiaf2, parseArgs, RIAF2_COMMANDS } from './riaf2Cli.js';
+export { writeClaudeGovernance, governHookCommand, type ClaudeInitOptions } from './claudeInit.js';
 export type { LedgerListener } from './ledger.js';
 export { LEDGER_VERSION } from './types.js';
 export type {
