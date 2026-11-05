@@ -47,7 +47,7 @@ export function governHookGroups(hookCommand: string): Record<string, { matcher?
 	const h = (timeout?: number) => [{ type: 'command' as const, command: hookCommand, ...(timeout ? { timeout } : {}) }];
 	return {
 		PreToolUse: [{ matcher: 'Read|Grep|Glob|LS|Bash', hooks: h(5) }],
-		PostToolUse: [{ matcher: 'Read|Grep|Glob|LS|Bash|Edit|Write|MultiEdit|NotebookEdit|Task', hooks: h(5) }],
+		PostToolUse: [{ matcher: 'Read|Grep|Glob|LS|Bash|Edit|Write|MultiEdit|NotebookEdit|Task|mcp__riaf__.*', hooks: h(5) }],
 		SessionStart: [{ hooks: h(15) }],
 		UserPromptSubmit: [{ hooks: h(15) }],
 		// A failing command (a red test run) fires this instead of PostToolUse; the console needs it for the run report.

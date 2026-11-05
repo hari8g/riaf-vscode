@@ -207,6 +207,7 @@ describe('Claude Code hook bridge', () => {
 		expect(JSON.stringify(h.PreToolUse)).toMatch(/other/);
 		expect(Object.keys(h)).toEqual(expect.arrayContaining(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'SessionEnd']));
 		expect(JSON.stringify(h.PostToolUse)).toContain('Task');
+		expect(JSON.stringify(h.PostToolUse)).toContain('mcp__riaf__');
 	});
 
 	it('runs the real hook script against a live governor endpoint (and fails open without one)', async () => {

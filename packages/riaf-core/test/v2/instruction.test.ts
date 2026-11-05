@@ -78,3 +78,12 @@ describe('Prompt Instruction', () => {
 		expect(claudeMdInstructionBlock(null)).toContain('/riaf-task');
 	});
 });
+
+import { extractBriefRequest as _extractBrief } from '../../src/index.js';
+describe('extractBriefRequest', () => {
+	it('reads the request out of a pasted brief and ignores ordinary prompts', () => {
+		const brief = '# RIAF Prompt Instruction 1a2b3c4d5e6f — pack abcd1234 — deadbeef\n\n## Task (bugfix, confidence 0.8)\nFix the   duplicate\ncharge\n\nRoute: x\n';
+		expect(_extractBrief(brief)).toEqual({ id: '1a2b3c4d5e6f', request: 'Fix the duplicate charge', intent: 'bugfix' });
+		expect(_extractBrief('please fix the duplicate charge')).toBeNull();
+	});
+});

@@ -131,6 +131,21 @@ describe('every prompt is a fresh run: earlier runs are switched off, saved and 
 		expect(readFileSync(join(root, '.riaf', 'reports', readdirSync(join(root, '.riaf', 'reports'))[0]), 'utf8').length).toBeGreaterThan(10);
 		await keep.stop();
 	});
+
+	it('a pasted RIAF brief keeps its own id and request and is not compiled again', async () => {
+		const { instruction } = await host.instruct('add a multiply function to src/math.ts please');
+		await hook(host, { session_id: 'P', hook_event_name: 'UserPromptSubmit', prompt: instruction.markdown });
+		const rows = host.runSummaries().filter(r => r.sessionId.startsWith('P'));
+		expect(rows).toHaveLength(1);
+		const submit = host.runEvents(rows[0].sessionId).find(e => e.event === 'UserPromptSubmit')!;
+		expect(submit.detail?.instruction).toBe(instruction.instruction_id);
+		expect(submit.detail?.brief).toBe(instruction.instruction_id);
+		expect(submit.detail?.prompt).not.toMatch(/^# RIAF Prompt Instruction/);
+		expect(host.currentInstruction()?.instruction_id).toBe(instruction.instruction_id);
+		const rep = host.runReport(rows[0].sessionId);
+		expect(rep.task.instruction?.id).toBe(instruction.instruction_id);
+		expect(rep.task.instruction?.plan.length).toBeGreaterThan(0);
+	});
 });
 
 import { spawn } from 'node:child_process';

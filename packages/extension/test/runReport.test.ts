@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRunReport, classifyEvent, eventDetail, isTestPath, looksLikeTestCommand, parseTestRun, reportToMarkdown, runStatus, summarizeRun, type RunEvent } from '../src/runReport.js';
+import { isTestInvocation, buildRunReport, classifyEvent, eventDetail, isTestPath, looksLikeTestCommand, parseTestRun, reportToMarkdown, runStatus, summarizeRun, type RunEvent } from '../src/runReport.js';
 
 describe('parseTestRun', () => {
 	it('pytest, with and without failures', () => {
@@ -45,6 +45,21 @@ describe('eventDetail', () => {
 	it('a failing test command with unreadable output still counts as a failed run', () => {
 		const d = eventDetail({ hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'npm test' }, error: 'Exit code 127 command not found' }, rel);
 		expect(d?.tests).toMatchObject({ ok: false, framework: 'unknown' });
+	});
+	it('a probe that merely mentions a runner is not a failed test run', () => {
+		for (const c of ['ls ~/envs; pytest --version', 'which pytest', 'pip show pytest', 'cat tests/test_a.py | grep pytest', 'python -m pytest --help']) expect(isTestInvocation(c), c).toBe(false);
+		for (const c of ['pytest tests/', 'cd app && python -m pytest -x', 'FOO=1 npm test', 'conda run -n x pytest -q']) expect(isTestInvocation(c), c).toBe(true);
+		const d = eventDetail({ hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'which pytest' }, error: 'Exit code 1' }, rel);
+		expect(d?.tests).toBeUndefined();
+	});
+	it('a pasted RIAF brief is shown as its request', () => {
+		const brief = '# RIAF Prompt Instruction 1a2b3c4d5e6f — pack abcd1234 — deadbeef\n\n## Task (feature, confidence 0.9)\nSuppress duplicate transactions within 5 minutes\n\nRoute: x\n';
+		expect(eventDetail({ hook_event_name: 'UserPromptSubmit', prompt: brief }, rel)).toEqual({ prompt: 'Suppress duplicate transactions within 5 minutes', brief: '1a2b3c4d5e6f' });
+	});
+	it('records RIAF tool calls as their own kind', () => {
+		const d = eventDetail({ hook_event_name: 'PostToolUse', tool_name: 'mcp__riaf__riaf_lookup', tool_input: { symbol: 'Foo' } }, rel);
+		expect(d?.desc).toBe('riaf_lookup Foo');
+		expect(classifyEvent({ event: 'PostToolUse', tool: 'mcp__riaf__riaf_lookup', path: null, decision: 'allow', reason: null, detail: d })).toMatchObject({ kind: 'riaf' });
 	});
 	it('keeps the prompt, ignores PreToolUse', () => {
 		expect(eventDetail({ hook_event_name: 'UserPromptSubmit', prompt: '  add   a\nfeature ' }, rel)).toEqual({ prompt: 'add a feature' });
@@ -133,5 +148,40 @@ describe('buildRunReport', () => {
 	it('summarizeRun gives the list row', () => {
 		const s = summarizeRun('s', events, now);
 		expect(s).toMatchObject({ status: 'waiting', turns: 1, filesRead: 1, filesEdited: 2, linesAdded: 17, title: 'add a multiply function', tests: { runs: 2, passed: 4, failed: 0, lastOk: true } });
+	});
+});
+
+describe('buildRunReport extras', () => {
+	const base = { sessionId: 's', metrics: {}, now: 99_000 };
+	it('without git: says so, treats an unread Write as a created file, and ignores outside paths', () => {
+		id = 0;
+		const events = [
+			ev('UserPromptSubmit', { detail: { prompt: 'x', instruction: 'i1', pack: ['src/a.py'] } }),
+			ev('PostToolUse', { tool: 'Read', path: 'src/a.py' }),
+			ev('PostToolUse', { tool: 'Edit', path: 'src/a.py', detail: { file: 'src/a.py', added: 2, removed: 1 } }),
+			ev('PostToolUse', { tool: 'Write', path: 'tests/test_new.py', detail: { file: 'tests/test_new.py', added: 9, removed: 0, write: true } }),
+			ev('PostToolUse', { tool: 'Read', path: '../other/x.py' }),
+			ev('PostToolUse', { tool: 'Edit', path: '/etc/y', detail: { file: '/etc/y', added: 1, removed: 0 } }),
+			ev('Stop'),
+		];
+		const r = buildRunReport({ ...base, events, git: null, instruction: { id: 'i1', request: 'x', intent: 'feature', plan: [], verification: [], packPaths: ['src/a.py'] } });
+		expect(r.notes.join(' ')).toMatch(/not a git repository/);
+		expect(r.files.edited.find(f => f.path === 'tests/test_new.py')).toMatchObject({ isNew: true, inPack: null });
+		expect(r.tests.newTestFiles).toEqual(['tests/test_new.py']);
+		expect(r.files.outside.map(f => f.path).sort()).toEqual(['../other/x.py', '/etc/y']);
+		expect(r.files.edited.map(f => f.path)).not.toContain('/etc/y');
+		expect(r.context).toMatchObject({ touched: 1, touchedInPack: 1 });
+	});
+	it('counts RIAF tool calls and shell exploration, and calls out a run that never used the index', () => {
+		id = 0;
+		const sh = (command: string) => ev('PostToolUse', { tool: 'Bash', path: command, detail: { command } });
+		const events = [ev('UserPromptSubmit', { detail: { prompt: 'x', instruction: 'i1' } }), sh('grep -rn foo src'), sh('sed -n 1,20p a.py'), sh('cat b.py'), ev('Stop')];
+		const inst = { id: 'i1', request: 'x', intent: 'feature', plan: [], verification: [], packPaths: [] };
+		const none = buildRunReport({ ...base, events, git: { changed: [], untracked: [] }, instruction: inst });
+		expect(none.governance).toMatchObject({ riafToolCalls: 0, shellExploration: 3 });
+		expect(none.summary.join(' ')).toMatch(/Never called a RIAF tool; explored with 3 shell commands/);
+		const used = buildRunReport({ ...base, events: [...events.slice(0, 1), ev('PostToolUse', { tool: 'mcp__riaf__riaf_lookup', detail: { desc: 'riaf_lookup Foo' } }), ...events.slice(1)], git: { changed: [], untracked: [] }, instruction: inst });
+		expect(used.governance.riafToolCalls).toBe(1); expect(used.summary.join(' ')).toMatch(/Used RIAF tools 1 time/);
+		expect(reportToMarkdown(none)).toMatch(/RIAF tool calls 0; shell searches/);
 	});
 });

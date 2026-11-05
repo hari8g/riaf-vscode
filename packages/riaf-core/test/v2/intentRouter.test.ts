@@ -138,3 +138,13 @@ describe('formatRouteLine', () => {
 		expect(line.split('\n')).toHaveLength(1);
 	});
 });
+
+describe('parseIntent: acceptance and constraint hygiene', () => {
+	it('drops code fragments, one-word items and repeats', () => {
+		const i = parseIntent('Add dedupe to ledger.py. It should ignore repeated rows within 5 minutes. it should ignore repeated rows within 5 minutes. Then expect(screen.getByText("x")); and keep it fast; do not touch billing.py');
+		expect(i.acceptance.filter(a => /ignore repeated rows/i.test(a))).toHaveLength(1);
+		expect(i.acceptance.some(a => /expect\(|=>|;/.test(a))).toBe(false);
+		expect(i.constraints.some(c => /[;{}]|=>/.test(c))).toBe(false);
+		expect(i.constraints.join(' ')).toMatch(/do not touch billing/);
+	});
+});

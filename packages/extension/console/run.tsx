@@ -91,6 +91,7 @@ const ICON: Record<EventKind, string> = {
 	served: 'M13 3L5 13h6l-1 8 8-10h-6z',
 	blocked: 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6zM9 12l2 2 4-4',
 	briefing: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 11v5M12 8h.01',
+	riaf: 'M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5',
 	subagent: 'M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 20c0-3 3-5 6-5s6 2 6 5M17 8a3 3 0 0 1 0 6M21 20c0-2-1-4-3-4.5',
 	'turn-end': 'M5 21V4h12l-2 4 2 4H5',
 	start: 'M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z',
@@ -104,7 +105,7 @@ export const StatusPill = ({ status }: { status: RunStatus }) => <span className
 
 const PHASES: { id: string; label: string; kinds: EventKind[] }[] = [
 	{ id: 'plan', label: 'Task received', kinds: ['prompt', 'briefing', 'start'] },
-	{ id: 'explore', label: 'Exploring', kinds: ['read', 'search', 'served', 'blocked'] },
+	{ id: 'explore', label: 'Exploring', kinds: ['read', 'search', 'served', 'blocked', 'riaf'] },
 	{ id: 'implement', label: 'Implementing', kinds: ['edit', 'command', 'subagent'] },
 	{ id: 'verify', label: 'Verifying', kinds: ['test'] },
 ];
@@ -201,6 +202,8 @@ export function RunReportView({ report: r, markdown, go }: { report: RunReport; 
 				</div>
 			</div>
 
+			{r.notes?.length > 0 && <div className="banner warn" style={{ margin: 0 }}><div className="stack" style={{ gap: 4 }}>{r.notes.map((x, i) => <div key={i} className="small">{x}</div>)}</div></div>}
+
 			<section className="panel">
 				<h3>What was done</h3>
 				<ul className="bul">{r.summary.map((s, i) => <li key={i}>{s}</li>)}</ul>
@@ -222,6 +225,7 @@ export function RunReportView({ report: r, markdown, go }: { report: RunReport; 
 							<td className="mono tiny"><span style={{ color: 'var(--moss)' }}>+{f.added}</span> <span style={{ color: 'var(--ember)' }}>−{f.removed}</span></td>
 							<td>{f.isNew && <Chip tone="teal">new</Chip>}{f.isTest && <Chip tone="moss">test</Chip>}{f.inPack === false && <Chip title="Claude edited a file RIAF had not put in the pack">not in pack</Chip>}</td></tr>)}
 					</tbody></table> : <p className="small muted">No file edits were recorded.</p>}
+					{r.files.outside?.length > 0 && <div className="small" style={{ marginTop: 10 }}><b>Outside this repository</b><div className="tiny mono muted" style={{ marginTop: 4 }}>{r.files.outside.map(f => `${f.path} (${f.edited ? 'edited' : 'read'})`).join(' · ')}</div></div>}
 					{r.git && (r.git.changed.length > 0 || r.git.untracked.length > 0) && <div className="small" style={{ marginTop: 10 }}><b>Checked against git</b> ({r.git.changed.length} changed, {r.git.untracked.length} new)
 						<div className="tiny muted" style={{ marginTop: 4 }}>{r.git.changed.slice(0, 8).map(c => `${c.file} +${c.added} −${c.removed}`).join(' · ')}{r.git.untracked.length ? ` · new: ${r.git.untracked.slice(0, 6).join(', ')}` : ''}</div></div>}
 				</section>
@@ -241,7 +245,7 @@ export function RunReportView({ report: r, markdown, go }: { report: RunReport; 
 			<div className="grid2">
 				<section className="panel">
 					<h3>What RIAF did for this run</h3>
-					<div className="kv"><span>Calls proposed</span><b>{gov.proposed}</b><span>Answered from the index</span><b>{gov.served}</b><span>Repeats blocked</span><b>{gov.blocked}</b><span>Calls avoided</span><b>{Math.round(gov.avoidedRate * 100)}%</b><span>Tokens served instead of executed</span><b>{fmtK(gov.tokensServed)}</b><span>Tokens executed</span><b>{fmtK(gov.tokensExecuted)}</b></div>
+					<div className="kv"><span>Calls proposed</span><b>{gov.proposed}</b><span>Answered from the index</span><b>{gov.served}</b><span>Repeats blocked</span><b>{gov.blocked}</b><span>RIAF tool calls</span><b>{gov.riafToolCalls ?? 0}</b><span>Shell searches (grep, sed, cat, find)</span><b>{gov.shellExploration ?? 0}</b><span>Calls avoided</span><b>{Math.round(gov.avoidedRate * 100)}%</b><span>Tokens served instead of executed</span><b>{fmtK(gov.tokensServed)}</b><span>Tokens executed</span><b>{fmtK(gov.tokensExecuted)}</b></div>
 				</section>
 				<section className="panel">
 					<h3>Context quality</h3>
@@ -324,6 +328,7 @@ export function HealthCheck({ health, onInstall, installing }: { health: Health;
 		{ ok: g.ownedByThisProcess || !g.fileEndpoint, text: g.otherPid ? `Hooks currently report to another RIAF process (pid ${g.otherPid}), not this console` : 'Hooks are pointed at this process', fix: 'Only one RIAF process can own .riaf/governor.json. Close the other (for example the VS Code extension) or use its console instead.' },
 		{ ok: health.hookScript, text: 'The hook client exists at .claude/hooks/riaf-govern.mjs', fix: 'Install the hooks.' },
 		{ ok: health.missing.length === 0, text: health.missing.length ? `Claude Code settings are missing hooks: ${health.missing.join(', ')}` : 'All hooks are registered in .claude/settings.json (including Stop, which marks a finished run)', fix: 'Install or update the hooks, then restart Claude Code.' },
+		{ ok: health.riafToolsRecorded, text: health.riafToolsRecorded ? 'RIAF tool calls (riaf_lookup and friends) are recorded in the run' : 'RIAF tool calls are not recorded yet, so a run cannot show whether Claude used the index', fix: 'Install or update the hooks, then restart Claude Code.' },
 		{ ok: health.eventsTotal > 0, text: health.eventsTotal ? `Last hook event received ${ago(health.lastEventAt ?? 0)} (${health.eventsTotal} in total)` : 'No hook event has been received yet', fix: 'Start a Claude Code session in this repository after installing the hooks.' },
 	];
 	const allOk = rows.every(r => r.ok);

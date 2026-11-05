@@ -253,6 +253,7 @@ details.card { border: 1px solid var(--line); border-radius: 8px; background: va
 .ev .lab { font-size: 13px; word-break: break-word; } .ev .t, .steps .t { color: var(--slate); font-size: 11.5px; font-variant-numeric: tabular-nums; padding-top: 3px; }
 .ev.prompt { background: var(--teal-tint); } .ev.prompt .ic { background: var(--teal); color: #fff; } .ev.prompt .lab { font-weight: 600; }
 .ev.edit .ic, .steps li.edit .ic { background: var(--ember-tint); color: var(--ember); }
+.ev.riaf .ic, .steps li.riaf .ic { background: var(--teal-tint, var(--moss-tint)); color: var(--teal, var(--moss)); }
 .ev.test .ic, .steps li.test .ic { background: var(--moss-tint); color: var(--moss); }
 .ev.served .ic, .ev.blocked .ic, .steps li.served .ic, .steps li.blocked .ic { background: var(--teal-tint); color: var(--teal-ink); }
 .ev.turn-end { background: var(--moss-tint); } .ev.turn-end .lab { font-weight: 600; color: var(--moss); }

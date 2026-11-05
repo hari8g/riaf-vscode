@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import {
-	blobHash, buildInstruction, formatRouteLine, loadCurrentInstruction, rebudget, render, Riaf2, routeIntent, saveInstruction,
+	blobHash, buildInstruction, extractBriefRequest, formatRouteLine, loadCurrentInstruction, rebudget, render, Riaf2, routeIntent, saveInstruction,
 	type BuildInstructionOptions, type ContextPack, type IntentRoute, type PromptInstruction, type RenderTarget, type RouteOptions,
 } from '@bosch-mps/riaf-core';
 import {
@@ -210,7 +210,7 @@ export class Riaf2Host {
 	}
 
 	/** Is Claude Code actually connected to this process? Used by the console to explain an empty Sessions page. */
-	hookHealth(): { governor: { listening: boolean; endpoint: string | null; fileEndpoint: string | null; ownedByThisProcess: boolean; otherPid: number | null }; hookScript: boolean; settingsPresent: boolean; events: Record<string, boolean>; missing: string[]; lastEventAt: number | null; eventsTotal: number } {
+	hookHealth(): { governor: { listening: boolean; endpoint: string | null; fileEndpoint: string | null; ownedByThisProcess: boolean; otherPid: number | null }; hookScript: boolean; settingsPresent: boolean; events: Record<string, boolean>; missing: string[]; riafToolsRecorded: boolean; lastEventAt: number | null; eventsTotal: number } {
 		const required = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'];
 		let settings: { hooks?: Record<string, { hooks?: { command?: string }[] }[]> } = {};
 		const settingsFile = join(this.root, '.claude', 'settings.json');
@@ -223,7 +223,7 @@ export class Riaf2Host {
 		return {
 			governor: { listening: this.server !== null, endpoint: this.endpoint, fileEndpoint, ownedByThisProcess: !!this.endpoint && this.endpoint === fileEndpoint, otherPid },
 			hookScript: existsSync(join(this.root, '.claude', 'hooks', 'riaf-govern.mjs')), settingsPresent: existsSync(settingsFile),
-			events, missing: required.filter(e => !events[e]), lastEventAt: last?.ts ?? this.lastHookAt, eventsTotal: last?.n ?? 0,
+			events, missing: required.filter(e => !events[e]), riafToolsRecorded: (settings.hooks?.PostToolUse ?? []).some(g => (g as { matcher?: string }).matcher?.includes('mcp__riaf__') && (g.hooks ?? []).some(h => typeof h.command === 'string' && h.command.includes('riaf-govern.mjs'))), lastEventAt: last?.ts ?? this.lastHookAt, eventsTotal: last?.n ?? 0,
 		};
 	}
 
@@ -490,6 +490,17 @@ export class Riaf2Host {
 			onUserPrompt: async (prompt, p) => {
 				const sid = runKeyRaw(p.session_id ?? 'default');
 				const text = prompt.trim();
+				// A pasted RIAF brief is already the instruction: keep its id and request, don't compile a second brief on top of it.
+				const brief = extractBriefRequest(text);
+				if (brief) {
+					const cur = this.currentInstruction();
+					const pack = this.riaf.currentPack();
+					this.lastInstruction.set(sid, cur && cur.instruction_id === brief.id
+						? { id: brief.id, intent: cur.intent.type, request: cur.request.slice(0, 300), plan: cur.plan.slice(0, 12), verify: cur.verification.slice(0, 12), pack: pack && pack.pack_id === cur.pack_id ? pack.items.map(i => i.path).slice(0, 40) : [] }
+						: { id: brief.id, intent: brief.intent ?? 'task', request: brief.request.slice(0, 300), plan: [], verify: [], pack: [] });
+					this.promptsSeen.add(sid);
+					return undefined;
+				}
 				if (text.startsWith('/') || text.split(/\s+/).length < 4) return undefined;
 				const route = await this.route(text);
 				const key = { type: route.type, entities: route.intent.entities.filter(e => e.kind !== 'term').map(e => e.value).sort().join('|') };
