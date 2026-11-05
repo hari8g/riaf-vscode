@@ -258,3 +258,17 @@ describe('Claude Code hook bridge', () => {
 		expect(existsSync(join(repo, '.riaf', 'governor.json'))).toBe(false);
 	}, 20_000);
 });
+
+import { shellAsRead } from '../src/governor/governor.js';
+describe('shellAsRead', () => {
+	const sh = (command: string) => ({ tool: 'Bash', args: { command }, sessionId: 's' });
+	it('turns a lone shell read into a Read', () => {
+		expect(shellAsRead(sh('cat api/main.py'))).toMatchObject({ tool: 'Read', args: { file_path: 'api/main.py' } });
+		expect(shellAsRead(sh('sed -n 200,604p api/main.py'))).toMatchObject({ tool: 'Read', args: { file_path: 'api/main.py', offset: 200, limit: 405 } });
+		expect(shellAsRead(sh("sed -n '5,9p' a.py"))).toMatchObject({ args: { offset: 5, limit: 5 } });
+		expect(shellAsRead(sh('head -n 40 a.py'))).toMatchObject({ tool: 'Read', args: { file_path: 'a.py', offset: 1, limit: 40 } });
+	});
+	it('leaves compound, piped, redirected and glob commands alone', () => {
+		for (const c of ['sed -n 1,5p a.py; ls', 'cat a.py | grep x', 'cat a.py > b.py', 'cat *.py', 'grep -n x a.py', 'pytest -q']) expect(shellAsRead(sh(c)).tool, c).toBe('Bash');
+	});
+});

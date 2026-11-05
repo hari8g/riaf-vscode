@@ -148,3 +148,17 @@ describe('parseIntent: acceptance and constraint hygiene', () => {
 		expect(i.constraints.join(' ')).toMatch(/do not touch billing/);
 	});
 });
+
+describe('parseIntent: a feature request that also asks for tests stays a feature', () => {
+	const req = 'Add per-gantry health monitoring. Keep a rolling 5-minute window of reads. Do not change the OCR code paths.\n\nAfter implementing, write unit tests for window rollover and each status transition. Run the full test suite and show the results. Then start the app and confirm the status.';
+	it('classifies as feature, not test', () => { expect(parseIntent(req).type).toBe('feature'); });
+	it('keeps "Keep a rolling window" as the task and only real guards as constraints', () => {
+		const i = parseIntent(req);
+		expect(i.constraints.join(' ')).toMatch(/Do not change the OCR/);
+		expect(i.constraints.join(' ')).not.toMatch(/rolling/i);
+	});
+	it('still treats a test-first request as test and "keep X unchanged" as a constraint', () => {
+		expect(parseIntent('Add unit tests for the hotlist API').type).toBe('test');
+		expect(parseIntent('Fix the crash in parse but keep the public API unchanged').constraints.join(' ')).toMatch(/keep the public API unchanged/);
+	});
+});

@@ -291,6 +291,15 @@ const n = (v: unknown): number => Number(v) || 0;
 const plural = (k: number, w: string): string => `${k} ${w}${k === 1 ? '' : 's'}`;
 export const fmtDuration = (ms: number): string => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`; };
 
+const SHELL_READ_SEG = /^(?:cat|head(?:\s+-n?\s*-?\d+)?|tail(?:\s+-n?\s*-?\d+)?|sed\s+-n\s+\S+|nl|less|bat)\s+(?:-\S+\s+)*(['"]?)([^\s'"|<>*?]+\.[A-Za-z0-9]{1,8})\1$/;
+/** Files a shell command reads one by one (`sed -n 1,40p a.py; cat b.py`), so exploring through Bash still counts as exploring. */
+export function shellReadFiles(command: string): string[] {
+	const out: string[] = [];
+	for (const raw of command.split(/&&|\|\||;|\n/)) { const m = SHELL_READ_SEG.exec(raw.trim()); if (m) out.push(m[2].replace(/^\.\//, '')); }
+	return out;
+}
+const SHELL_WRITE_HINT = /\bsed\s+-i|\bperl\s+-pi|\btee\s|(?:^|[;&|]\s*)(?:mv|cp)\s|\bpython3?\s+\S*(?:patch|apply|edit|fix|migrate|rewrite)\S*\.py|[^<>2&0-9]>{1,2}\s*(?!\/(?:dev|tmp|private)\b|&)[\w.\/-]+\.(?:py|ts|js|tsx|json|ya?ml|md|toml|cfg|txt|sh)/;
+
 export function buildRunReport(inp: ReportInput): RunReport {
 	const ev = inp.events;
 	const sum = summarizeRun(inp.sessionId, ev, inp.now);
@@ -307,9 +316,12 @@ export function buildRunReport(inp: ReportInput): RunReport {
 	const outsideMap = new Map<string, boolean>();
 	const isOutside = (f: string): boolean => f.startsWith('../') || f.startsWith('/') || /^[A-Za-z]:[\\/]/.test(f) || f.startsWith('~');
 	const readBefore = new Set<string>(), wroteNew = new Set<string>();
-	let riafToolCalls = 0, shellExploration = 0;
+	let riafToolCalls = 0, shellExploration = 0, shellWrites = 0;
+	const shellRead = new Map<string, number>();
 	for (const e of ev) {
 		if (e.kind === 'riaf' && e.event === 'PostToolUse') riafToolCalls++;
+		if (e.kind === 'command' && e.detail?.command && SHELL_WRITE_HINT.test(e.detail.command)) shellWrites++;
+		if (e.kind === 'command' && e.detail?.command && e.event === 'PostToolUse') for (const f of shellReadFiles(e.detail.command)) if (!isOutside(f)) shellRead.set(f, (shellRead.get(f) ?? 0) + 1);
 		if (e.kind === 'command' && e.detail?.command && /^\s*(?:cd\s+\S+\s*&&\s*)?(?:grep|rg|sed|cat|head|tail|find|ls|awk|wc)\b/.test(e.detail.command)) shellExploration++;
 		if (e.event === 'PostToolUse' && e.kind === 'read' && e.path && isOutside(e.path)) { if (!outsideMap.has(e.path)) outsideMap.set(e.path, false); continue; }
 		if (e.event === 'PostToolUse' && e.kind === 'read' && e.path) { readMap.set(e.path, (readMap.get(e.path) ?? 0) + 1); readBefore.add(e.path); }
@@ -348,7 +360,7 @@ export function buildRunReport(inp: ReportInput): RunReport {
 	// Context quality: did Claude work on the files RIAF packed?
 	let context: RunReport['context'] = null;
 	if (pack) {
-		const touchedAll = new Set<string>([...readMap.keys(), ...editMap.keys()]);
+		const touchedAll = new Set<string>([...readMap.keys(), ...shellRead.keys(), ...editMap.keys()]);
 		for (const e of ev) if (e.event === 'PreToolUse' && e.decision === 'deny' && e.path) touchedAll.add(e.path);
 		const existing = [...touchedAll].filter(t => !created.has(t));
 		const filePacks = new Set([...pack].filter(p => !p.startsWith('(') && !p.endsWith('/')));
@@ -380,7 +392,8 @@ export function buildRunReport(inp: ReportInput): RunReport {
 		: `Finished with failing tests${final ? ` (${final.failed + final.errors} failing)` : ''}`;
 	const summary: string[] = [];
 	if (prompts[0]) summary.push(`Task: ${short(prompts[0].text, 200)}`);
-	summary.push(`Explored ${plural(readMap.size, 'file')}${served + blocked ? `; RIAF answered ${plural(served, 'call')} from the index and blocked ${plural(blocked, 'repeat')}, saving about ${governance.tokensServed.toLocaleString()} tokens` : ''}.`);
+	const exploredAll = new Set([...readMap.keys(), ...shellRead.keys()]);
+	summary.push(`Explored ${plural(exploredAll.size, 'file')}${shellRead.size ? ` (${shellRead.size} through shell reads)` : ''}${served + blocked ? `; RIAF answered ${plural(served, 'call')} from the index and blocked ${plural(blocked, 'repeat')}, saving about ${governance.tokensServed.toLocaleString()} tokens` : ''}.`);
 	summary.push(edited.length ? `Edited ${plural(edited.length, 'file')} (+${addedTotal} −${removedTotal} lines)${testFilesTouched.length ? `, including ${plural(testFilesTouched.length, 'test file')}` : ''}.` : 'Made no file edits.');
 	if (testRuns.length) summary.push(`Ran tests ${plural(testRuns.length, 'time')}; last run ${final!.ok ? 'passed' : 'failed'}: ${final!.passed} passed, ${final!.failed + final!.errors} failing${final!.skipped ? `, ${final!.skipped} skipped` : ''}${redToGreen ? '. It went from failing to passing during the run' : ''}.`);
 	else summary.push('No test command was observed. If it ran tests outside the hooks, they are not counted here.');
@@ -390,6 +403,7 @@ export function buildRunReport(inp: ReportInput): RunReport {
 
 	const notes: string[] = [];
 	if (!inp.git) notes.push('This folder is not a git repository, so file changes could not be verified against git. New files are inferred from Write calls to files that were never read; run `git init` and commit a baseline for exact results.');
+	if (!inp.git && shellWrites) notes.push(`${plural(shellWrites, 'shell command')} may have modified files (sed -i, tee, redirects or a patch script). Those edits are not in the file list. Run \`git init\` and commit a baseline to see them.`);
 	if (outsideMap.size) notes.push(`${plural(outsideMap.size, 'path')} outside the repository ${outsideMap.size === 1 ? 'was' : 'were'} touched and left out of the file counts.`);
 
 	return {

@@ -44,7 +44,7 @@ const BACKTICK_RE = /`([^`\n]{2,80})`/g;
 const ERROR_RE = /(?:"([^"\n]{8,200})"|'([^'\n]{8,200})'|\b((?:[A-Z]\w*(?:Error|Exception))(?::[^\n]{0,160})?))/g;
 const TICKET_RE = /\b([A-Z][A-Z0-9]{1,9}-\d{1,6})\b|(?:^|\s)(#\d{1,6})\b/g;
 
-const CONSTRAINT_RE = /(?:^|[.;,\n]\s*|\b(?:but|and)\s+)((?:do not|don't|dont|never|must not|mustn't|without|avoid|keep|preserve|only|no (?:changes?|new)|leave)\b[^.;\n]*)/gi;
+const CONSTRAINT_RE = /(?:^|[.;,\n]\s*|\b(?:but|and)\s+)((?:do not|don't|dont|never|must not|mustn't|without|avoid|preserve|only|keep(?=[^.;\n]*\b(?:unchanged|intact|as[- ]is|the same|compatible|working|stable)\b)|no (?:changes?|new)|leave)\b[^.;\n]*)/gi;
 const ACCEPT_RE = /(?:^|[.;,\n]\s*)((?:it |this |the \w+ )?(?:should|must|needs? to|so that|expect(?:ed)?|ensure|make sure|acceptance:?)\b[^.;\n]*)/gi;
 
 /** Code that happens to contain "expect" or "keep" is not a requirement: `expect(screen`, `x => y`, `a = b;`. */
@@ -60,6 +60,20 @@ function tidy(items: string[], minWords: number): string[] {
 	});
 }
 
+/**
+ * Lexicon hits for one intent type. The first paragraph states the task; later paragraphs usually say how to verify it
+ * ("write unit tests… run the suite…"), so their words count for less and cannot turn a feature into a test task.
+ */
+function lexiconScore(t: IntentType, text: string): number {
+	let s = 0;
+	text.split(/\n\s*\n/).forEach((para, i) => {
+		let h = 0;
+		for (const re of TYPE_LEXICON[t]) { const hits = para.match(new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g')); if (hits) h += hits.length; }
+		s += i === 0 ? h : h * 0.4;
+	});
+	return s;
+}
+
 export function splitIdentifier(id: string): string[] {
 	return id.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').split(/[\s_.$\-/]+/).map(s => s.toLowerCase()).filter(Boolean);
 }
@@ -67,11 +81,7 @@ export function splitIdentifier(id: string): string[] {
 /** Raw lexicon hit counts per type (what the classifier scores before priority and bonuses). Used by the router to spot multi-intent requests. */
 export function intentTypeScores(text: string): Record<IntentType, number> {
 	const out = {} as Record<IntentType, number>;
-	for (const t of TYPE_PRIORITY) {
-		let s = 0;
-		for (const re of TYPE_LEXICON[t]) { const hits = text.match(new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g')); if (hits) s += hits.length; }
-		out[t] = s;
-	}
+	for (const t of TYPE_PRIORITY) out[t] = lexiconScore(t, text);
 	return out;
 }
 
@@ -114,11 +124,11 @@ export function parseIntent(request: string, extra: { activeFile?: string; selec
 	// Type scoring.
 	const scores = new Map<IntentType, number>();
 	for (const t of TYPE_PRIORITY) {
-		let s = 0;
-		for (const re of TYPE_LEXICON[t]) { const hits = text.match(new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g')); if (hits) s += hits.length; }
+		let s = lexiconScore(t, text);
+		if (t === 'feature' && /^\s*(?:please\s+)?(?:add|implement|build|introduce|create|support|enable)\b(?![^.\n]*\btests?\b)/i.test(text)) s += 2;
 		if (t === 'bugfix' && entities.some(e => e.kind === 'error')) s += 2;
 		if (t === 'explain' && /^(how|what|why|where|which|explain|describe)\b/i.test(text)) s += 1.5;
-		if (t === 'test' && /\b(write|add|create|missing)\b[^.]*\btests?\b/i.test(text)) s += 1.5;
+		if (t === 'test' && /\b(write|add|create|missing)\b[^.]*\btests?\b/i.test(text.split(/\n\s*\n/)[0])) s += 1.5;
 		if (t === 'migrate' && /\bfrom\b[^.]*\bto\b/i.test(text) && /\b(migrat|upgrad|port|mov)/i.test(text)) s += 1.5;
 		scores.set(t, s);
 	}

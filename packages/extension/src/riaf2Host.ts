@@ -30,6 +30,7 @@ export interface Riaf2HostOptions {
 }
 
 /** A run is one prompt: `<claude session id>~<base36 time>`. Hooks of the same prompt share it; the next prompt gets a new one. */
+const clip = (t: string, n: number): string => t.length <= n ? t : `${t.slice(0, n - 1).replace(/\s+\S*$/, '')}…`;
 export const runKeyRaw = (key: string): string => key.split('~')[0];
 
 /** Text Claude Code injects itself (background task results, reminders) rather than something the developer typed. */
@@ -508,8 +509,8 @@ export class Riaf2Host {
 					const cur = this.currentInstruction();
 					const pack = this.riaf.currentPack();
 					this.lastInstruction.set(sid, cur && cur.instruction_id === brief.id
-						? { id: brief.id, intent: cur.intent.type, request: cur.request.slice(0, 300), plan: cur.plan.slice(0, 12), verify: cur.verification.slice(0, 12), pack: pack && pack.pack_id === cur.pack_id ? pack.items.map(i => i.path).slice(0, 40) : [] }
-						: { id: brief.id, intent: brief.intent ?? 'task', request: brief.request.slice(0, 300), plan: [], verify: [], pack: [] });
+						? { id: brief.id, intent: cur.intent.type, request: clip(cur.request, 300), plan: cur.plan.slice(0, 12), verify: cur.verification.slice(0, 12), pack: pack && pack.pack_id === cur.pack_id ? pack.items.map(i => i.path).slice(0, 40) : [] }
+						: { id: brief.id, intent: brief.intent ?? 'task', request: clip(brief.request, 300), plan: [], verify: [], pack: [] });
 					this.promptsSeen.add(sid);
 					return undefined;
 				}
@@ -523,7 +524,7 @@ export class Riaf2Host {
 				this.promptsSeen.add(sid);
 				if (route.askFirst) return `RIAF could not classify this request confidently (${route.type}, ${route.confidence}). Before exploring, ask the developer:\n${route.questions.map(q => `- ${q}`).join('\n')}`;
 				const { pack, instruction } = await this.instruct(text, { route, budget: Math.min(route.budget, this.o.hookPackBudget ?? 12_000) });
-				this.lastInstruction.set(sid, { id: instruction.instruction_id, intent: route.type, request: text.slice(0, 300), plan: instruction.plan.slice(0, 12), verify: instruction.verification.slice(0, 12), pack: pack.items.map(i => i.path).slice(0, 40) });
+				this.lastInstruction.set(sid, { id: instruction.instruction_id, intent: route.type, request: clip(text, 300), plan: instruction.plan.slice(0, 12), verify: instruction.verification.slice(0, 12), pack: pack.items.map(i => i.path).slice(0, 40) });
 				return `RIAF compiled instruction ${instruction.instruction_id} for this task (${formatRouteLine(route, { items: pack.items.length, tokens: pack.budget.used_tokens })}; also at .claude/riaf/instructions/current.md and riaf://instruction/current).\n\n${instruction.markdown}`;
 			},
 		});

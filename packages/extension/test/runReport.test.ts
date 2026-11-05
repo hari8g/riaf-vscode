@@ -185,3 +185,19 @@ describe('buildRunReport extras', () => {
 		expect(reportToMarkdown(none)).toMatch(/RIAF tool calls 0; shell searches/);
 	});
 });
+
+describe('shell exploration in reports', () => {
+	it('counts files read through sed/cat/head', async () => {
+		const { shellReadFiles } = await import('../src/runReport.js');
+		expect(shellReadFiles('sed -n 200,604p api/main.py; cat ./pipeline/a.py | head; ls')).toEqual(['api/main.py']);
+		expect(shellReadFiles("head -n 20 tests/test_a.py && cat 'x.yaml'")).toEqual(['tests/test_a.py', 'x.yaml']);
+	});
+	it('says so when shell commands may have edited files and there is no git', () => {
+		id = 0;
+		const sh = (command: string) => ev('PostToolUse', { tool: 'Bash', path: command, detail: { command } });
+		const events = [ev('UserPromptSubmit', { detail: { prompt: 'x' } }), sh('sed -n 1,9p a.py'), sh('python /tmp/x/patch_main.py'), ev('Stop')];
+		const r = buildRunReport({ sessionId: 's', events, metrics: {}, now: 99_000, git: null });
+		expect(r.notes.join(' ')).toMatch(/may have modified files/);
+		expect(r.summary.join(' ')).toMatch(/Explored 1 file \(1 through shell reads\)/);
+	});
+});

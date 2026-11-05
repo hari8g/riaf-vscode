@@ -35,6 +35,24 @@ export interface GovernorOptions {
 
 interface SessionRead { blob: string; full: boolean; ranges: [number, number][]; at: number }
 
+/**
+ * Claude often reads files through the shell (`sed -n 10,80p f.py`, `cat f.py`, `head -n 40 f.py`) instead of the Read tool, which
+ * bypasses every read rule. A command that is exactly one such read is treated as a Read of that file.
+ */
+export function shellAsRead(call: ToolCall): ToolCall {
+	if (!SHELL_TOOLS.test(call.tool)) return call;
+	const cmd = String(call.args.command ?? call.args.cmd ?? '').trim();
+	if (!cmd || /[;&|<>`$()]/.test(cmd.replace(/'[^']*'|"[^"]*"/g, m => m.replace(/[;&|<>`$()]/g, '_')))) return call;
+	const file = (x: string | undefined): string | null => { const v = (x ?? '').replace(/^['"]|['"]$/g, ''); return v && !v.startsWith('-') && !/[*?]/.test(v) ? v : null; };
+	let m = /^cat\s+(\S+)$/.exec(cmd);
+	if (m && file(m[1])) return { ...call, tool: 'Read', args: { file_path: file(m[1]) } };
+	m = /^sed\s+-n\s+['"]?(\d+),(\d+)p['"]?\s+(\S+)$/.exec(cmd);
+	if (m && file(m[3]) && Number(m[2]) >= Number(m[1])) return { ...call, tool: 'Read', args: { file_path: file(m[3]), offset: Number(m[1]), limit: Number(m[2]) - Number(m[1]) + 1 } };
+	m = /^head\s+(?:-n\s*)?-?(\d+)\s+(\S+)$/.exec(cmd);
+	if (m && file(m[2])) return { ...call, tool: 'Read', args: { file_path: file(m[2]), offset: 1, limit: Number(m[1]) } };
+	return call;
+}
+
 export function classifyCall(call: ToolCall): CallClass {
 	const t = call.tool;
 	if (READ_TOOLS.test(t)) return 'read';
@@ -156,7 +174,7 @@ export class ToolGovernor {
 
 	/** Decide before a tool runs. Never throws: any internal error allows the call. */
 	async guard(call: ToolCall): Promise<GuardDecision> {
-		try { return await this._guard(call); } catch (e) { return { decision: 'allow', note: `governor error: ${String((e as Error)?.message ?? e)}` }; }
+		try { return await this._guard(this.shellReadNudge(call)); } catch (e) { return { decision: 'allow', note: `governor error: ${String((e as Error)?.message ?? e)}` }; }
 	}
 
 	private async _guard(call: ToolCall): Promise<GuardDecision> {
@@ -235,6 +253,18 @@ export class ToolGovernor {
 		return this.allow(cls);
 	}
 
+	private shellReads = 0;
+	/** Reads through the shell are governed like Read; after a few, point Claude at the index tools that answer the same question with far fewer tokens. */
+	private shellReadNudge(raw: ToolCall): ToolCall {
+		const call = shellAsRead(raw);
+		const cmd = String(raw.args.command ?? raw.args.cmd ?? '');
+		if (SHELL_TOOLS.test(raw.tool) && /(^|[;&|]\s*)(sed\s+-n|cat|head|tail|grep|rg|find)\b/.test(cmd) && !SHELL_WRITE.test(cmd)) {
+			this.shellReads++;
+			if (this.shellReads === 3 || this.shellReads % 10 === 0) this.note(this.keyOf(call).key, 'RIAF: this repository is indexed. Prefer the riaf_lookup (symbol or file outline, callers, callees), riaf_search and riaf_expand tools over grep, sed and cat. They return only the relevant part and cost a fraction of the tokens.');
+		}
+		return call;
+	}
+
 	private note(key: string, text: string): void {
 		const l = this.pendingNotes.get(key) ?? [];
 		l.push(text); this.pendingNotes.set(key, l);
@@ -267,7 +297,7 @@ export class ToolGovernor {
 	 * loop warnings and soft-budget reflections.
 	 */
 	async record(call: ToolCall, output: string, opts: { isError?: boolean; prefetch?: PrefetchItem[] } = {}): Promise<{ additionalContext?: string }> {
-		try { return await this._record(call, output, opts); } catch { return {}; }
+		try { return await this._record(shellAsRead(call), output, opts); } catch { return {}; }
 	}
 
 	private async _record(call: ToolCall, output: string, opts: { isError?: boolean; prefetch?: PrefetchItem[] }): Promise<{ additionalContext?: string }> {
