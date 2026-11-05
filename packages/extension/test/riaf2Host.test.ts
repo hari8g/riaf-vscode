@@ -36,15 +36,50 @@ describe('Riaf2Host (MCP-side wiring of index, compiler and governor)', () => {
 	}, 60_000);
 	afterAll(async () => { await host.stop(); await riaf.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
 
-	it('compiles a pack on the first substantive prompt and writes .claude/riaf/pack.md', async () => {
+	it('routes the first substantive prompt, compiles an instruction, and re-compiles only when the intent changes', async () => {
 		const out = await host.handleHook({ session_id: 's1', hook_event_name: 'UserPromptSubmit', prompt: 'Fix the Cart total so it rounds to whole cents' }) as { hookSpecificOutput: { additionalContext: string } };
-		expect(out.hookSpecificOutput.additionalContext).toMatch(/RIAF compiled a Context Pack/);
+		expect(out.hookSpecificOutput.additionalContext).toMatch(/RIAF compiled instruction [0-9a-f]{8}/);
+		expect(out.hookSpecificOutput.additionalContext).toMatch(/Intent: bugfix/);
 		expect(out.hookSpecificOutput.additionalContext).toMatch(/src\/cart\.ts/);
+		expect(out.hookSpecificOutput.additionalContext).toMatch(/## Plan/);
 		expect(existsSync(join(root, '.claude', 'riaf', 'pack.md'))).toBe(true);
-		// Only once per session.
-		expect(await host.handleHook({ session_id: 's1', hook_event_name: 'UserPromptSubmit', prompt: 'and also check the price helper please' })).toEqual({});
+		expect(existsSync(join(root, '.claude', 'riaf', 'instructions', 'current.md'))).toBe(true);
+		expect(host.currentInstruction()?.intent.type).toBe('bugfix');
+		// Same intent + entities → nothing new is injected.
+		expect(await host.handleHook({ session_id: 's1', hook_event_name: 'UserPromptSubmit', prompt: 'and fix the Cart total rounding again please' })).toEqual({});
+		// A different intent in the same session → a new instruction.
+		const next = await host.handleHook({ session_id: 's1', hook_event_name: 'UserPromptSubmit', prompt: 'Explain how the price helper is used by the cart' }) as { hookSpecificOutput: { additionalContext: string } };
+		expect(next.hookSpecificOutput.additionalContext).toMatch(/Intent: explain/);
+		// Slash commands and tiny prompts never trigger a compile.
+		expect(await host.handleHook({ session_id: 's1', hook_event_name: 'UserPromptSubmit', prompt: '/riaf-verify' })).toEqual({});
+		expect(await host.handleHook({ session_id: 's9', hook_event_name: 'UserPromptSubmit', prompt: 'ok go' })).toEqual({});
 		const start = await host.handleHook({ session_id: 's2', hook_event_name: 'SessionStart', source: 'startup' }) as { hookSpecificOutput: { additionalContext: string } };
 		expect(start.hookSpecificOutput.additionalContext).toMatch(/still current/);
+	});
+
+	it('route() and instruct() expose the router and the assembler to MCP tools', async () => {
+		const r = await host.route('Fix the Cart total rounding', { command: 'plan' });
+		expect(r.source).toBe('command');
+		expect(r.mode).toBe('plan');
+		const vague = await host.route('fix it');
+		expect(vague.askFirst).toBe(true);
+		const { instruction, route, path } = await host.instruct('Write a unit test for price() with an empty list', { findings: ['1: src/price.ts:2 — reduce over an empty array returns 0'] });
+		expect(route.type).toBe('test');
+		expect(instruction.markdown).toContain('- evidence: src/price.ts:2');
+		expect(readFileSync(path, 'utf8')).toBe(instruction.markdown);
+		expect(host.currentInstruction()?.instruction_id).toBe(instruction.instruction_id);
+	});
+
+	it('uses the arbiter only when the lexicon is unsure', async () => {
+		let calls = 0;
+		const h2 = new Riaf2Host(riaf, { host: 'test', classify: async () => { calls++; return '{"type":"refactor","confidence":0.9}'; } });
+		await h2.route('Fix the TypeError in `Cart.total` so it rounds to whole cents');
+		expect(calls).toBe(0);
+		const r = await h2.route('move price into the cart');
+		expect(calls).toBe(1);
+		expect(r.source).toBe('arbiter');
+		expect(r.type).toBe('refactor');
+		await h2.stop();
 	});
 
 	it('serves repeat reads, re-indexes after an Edit, and persists cache + metrics', async () => {

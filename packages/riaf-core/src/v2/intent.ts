@@ -51,6 +51,19 @@ export function splitIdentifier(id: string): string[] {
 	return id.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').split(/[\s_.$\-/]+/).map(s => s.toLowerCase()).filter(Boolean);
 }
 
+/** Raw lexicon hit counts per type (what the classifier scores before priority and bonuses). Used by the router to spot multi-intent requests. */
+export function intentTypeScores(text: string): Record<IntentType, number> {
+	const out = {} as Record<IntentType, number>;
+	for (const t of TYPE_PRIORITY) {
+		let s = 0;
+		for (const re of TYPE_LEXICON[t]) { const hits = text.match(new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g')); if (hits) s += hits.length; }
+		out[t] = s;
+	}
+	return out;
+}
+
+export const INTENT_TYPES: IntentType[] = [...TYPE_PRIORITY];
+
 export function parseIntent(request: string, extra: { activeFile?: string; selection?: string } = {}): ParsedIntent {
 	const text = request.trim();
 	const entities: IntentEntity[] = [];

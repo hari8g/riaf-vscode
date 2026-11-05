@@ -25,7 +25,7 @@ export type HostRequest =
 	| { type: 'mcpRefresh' }
 	| { type: 'detectProviders' }
 	| { type: 'integrationHealth'; id?: string } | { type: 'setIntegrationCredentials'; id?: string } | { type: 'clearIntegrationCredentials'; id: string }
-	| { type: 'syncSharedCredentials' } | { type: 'openAudit' };
+	| { type: 'syncSharedCredentials' } | { type: 'openAudit' } | { type: 'command'; id: string };
 
 export type IntegrationHealth = { ok: boolean; enabled: boolean; message: string; latencyMs?: number; missingCredentials: string[]; detail?: Record<string, unknown> };
 export type IntegrationAdapterInfo = {

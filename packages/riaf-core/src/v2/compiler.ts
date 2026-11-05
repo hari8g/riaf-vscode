@@ -35,6 +35,10 @@ export interface CompileOptions {
 	appendOutput?: string;
 	/** Force a full recompile even when an identical pack exists for this HEAD. */
 	fresh?: boolean;
+	/** Developer-pinned paths: always included, ranked first (console / review card). */
+	pinned?: string[];
+	/** Developer-excluded paths: never included. */
+	excluded?: string[];
 	/** Show author names instead of roles (local sessions only). */
 	showAuthorNames?: boolean;
 	/** Evaluation: only use history strictly before this timestamp (held-out commits). */
@@ -109,7 +113,7 @@ export class PackCompiler {
 		const budget = Math.max(512, opts.budget ?? 24_000);
 		const head = await this.d.head();
 		const intent = parseIntent(request, { activeFile: opts.activeFile, selection: opts.selection });
-		const intentKey = createHash('sha256').update(`${request.trim().toLowerCase()}\u0000${opts.scope ?? ''}\u0000${budget}`).digest('hex').slice(0, 24);
+		const intentKey = createHash('sha256').update(`${request.trim().toLowerCase()}\u0000${opts.scope ?? ''}\u0000${budget}\u0000${[...(opts.pinned ?? [])].sort().join(',')}\u0000${[...(opts.excluded ?? [])].sort().join(',')}`).digest('hex').slice(0, 24);
 		const previous = opts.persist === false ? undefined : this.latestPack(intentKey);
 
 		// Stage checkpoint: re-use the previous pack on the same HEAD and append the stage output.
@@ -285,6 +289,16 @@ export class PackCompiler {
 			const p = c.kind === 'test' ? prior.test : c.kind === 'manifest' ? prior.manifest : isDoc(c.path) ? prior.doc : prior.source;
 			c.final = 0.55 * rel + 0.1 * centrality + 0.15 * history + 0.2 * p + (c.explicit ? 0.15 : 0);
 		}
+		// Developer overrides: pinned paths outrank everything (and are added if the retrievers missed them); excluded paths vanish.
+		const norm = (p: string) => p.replace(/\\/g, '/').replace(/^\.?\//, '');
+		const excluded = new Set((opts.excluded ?? []).map(norm));
+		for (const p of (opts.pinned ?? []).map(norm)) {
+			if (!allFiles.has(p) || excluded.has(p)) continue;
+			const c = cand(p);
+			c.explicit = true; c.final = 2 + (c.final ?? 0);
+			if (!c.reasons.includes('pinned by the developer')) c.reasons.unshift('pinned by the developer');
+		}
+		for (const p of excluded) cands.delete(p);
 		const ranked = [...cands.values()].sort((a, b) => (b.final ?? 0) - (a.final ?? 0)).slice(0, 80);
 		if (process.env.RIAF_DEBUG_RANK) for (const c of ranked.slice(0, 25)) this.d.log?.(`[rank] ${c.final?.toFixed(3)} rel=${(c.rel / maxRel).toFixed(3)} seed=${c.isSeed} ${c.kind} ${c.path} :: ${c.reasons.join(' | ')}`);
 

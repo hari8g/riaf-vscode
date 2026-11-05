@@ -17,6 +17,9 @@ export const SKIP_DIRS: ReadonlySet<string> = new Set([
 	'.next', '.nuxt', 'coverage', '.cache', 'vendor', 'target', '.gradle', '.idea', '.hg', '.svn',
 	'.terraform', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.turbo', '.parcel-cache',
 ]);
+/** RIAF's own generated output (packs, instructions): never index what we wrote for the model. */
+export const SKIP_PATHS: readonly string[] = ['.claude/riaf/', '.riaf/index.sqlite', '.riaf/daemon.json', '.riaf/runs/'];
+const skipPath = (p: string) => SKIP_PATHS.some(s => p === s.replace(/\/$/, '') || p.startsWith(s));
 const MAX_DEPTH = 14;
 const MAX_FILES = 50_000;
 
@@ -248,6 +251,7 @@ export const buildExcludeMatcher = (workspaceRoot: string | null, excludeGlobs?:
 		const p = relPath.replace(/\\/g, '/');
 		if (!p || p === '.') return false;
 		if (p.split('/').some(seg => SKIP_DIRS.has(seg))) return true;
+		if (skipPath(p)) return true;
 		if (extra(p)) return true;
 		return gitignore(p) === true;
 	};
@@ -469,7 +473,7 @@ export const scanWorkspace = (workspaceRoot: string, options: ScanOptions = {}):
 			let stat;
 			try { stat = statSync(fullPath); } catch { continue; }
 			const relPath = relative(workspaceRoot, fullPath).replace(/\\/g, '/');
-			if (extraExcluded(relPath) || isIgnored(relPath)) continue;
+			if (extraExcluded(relPath) || isIgnored(relPath) || skipPath(relPath)) continue;
 
 			if (stat.isDirectory()) {
 				if (depth >= MAX_DEPTH) continue;

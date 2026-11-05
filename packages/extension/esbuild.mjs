@@ -43,7 +43,7 @@ const extension = esbuild.context({
 
 const mcp = esbuild.context({
   ...common,
-  entryPoints: { mcp: 'src/mcp.ts', 'proxy-bridge': 'src/proxyBridgeCli.ts' },
+  entryPoints: { mcp: 'src/mcp.ts', 'proxy-bridge': 'src/proxyBridgeCli.ts', daemon: 'src/daemon/cli.ts' },
   format: 'esm',
   outdir: 'dist',
   outExtension: { '.js': '.mjs' },
@@ -65,7 +65,27 @@ const webview = esbuild.context({
   outdir: 'dist',
 });
 
-const ctxs = await Promise.all([extension, mcp, webview]);
+// RIAF Console (browser, IIFE) — served by riafd from dist/console/.
+import { cpSync, mkdirSync } from 'node:fs';
+const consoleApp = esbuild.context({
+  bundle: true,
+  platform: 'browser',
+  target: 'es2022',
+  format: 'iife',
+  sourcemap: !production,
+  minify: production,
+  logLevel: 'info',
+  jsx: 'automatic',
+  define: { 'process.env.NODE_ENV': production ? '"production"' : '"development"' },
+  entryPoints: { console: 'console/main.tsx' },
+  outdir: 'dist/console',
+  plugins: [{
+    name: 'console-static',
+    setup(b) { b.onEnd(() => { mkdirSync('dist/console', { recursive: true }); cpSync('console/index.html', 'dist/console/index.html'); cpSync('console/theme.css', 'dist/console/console.css'); cpSync('media/mps-logo-source.png', 'dist/console/mps-logo.png'); }); },
+  }],
+});
+
+const ctxs = await Promise.all([extension, mcp, webview, consoleApp]);
 if (watch) {
   await Promise.all(ctxs.map(c => c.watch()));
   console.log('watching…');

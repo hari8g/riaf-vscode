@@ -6,15 +6,18 @@
  *   riaf history <path> | --hotspots | --since <ref|date> [--prefix path/]
  *   riaf eval [--samples N] [--budget 24k] [--json]
  *   riaf init --host claude [--mcp-command "node /path/to/riaf-mcp.mjs"]
+ *   riaf serve [--port 7421] [--open] [--daemon /path/to/daemon.mjs]   RIAF Console (web UI) over this repo's index
+ *   riaf classify "<task>" | riaf instruct "<task>" [--budget 16k]     intent route / Prompt Instruction
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
-import { formatEvalReport, parseBudget, Riaf2, runEval, RENDER_TARGETS, type RenderTarget } from '@bosch-mps/riaf-core';
+import { buildInstruction, formatEvalReport, formatRouteLine, parseBudget, Riaf2, routeIntent, runEval, saveInstruction, RENDER_TARGETS, type RenderTarget } from '@bosch-mps/riaf-core';
 import { writeClaudeGovernance } from './claudeInit.js';
 
-export const RIAF2_COMMANDS = ['index', 'search', 'pack', 'history', 'eval', 'init'] as const;
+export const RIAF2_COMMANDS = ['index', 'search', 'pack', 'history', 'eval', 'init', 'serve', 'classify', 'instruct'] as const;
 
-const VALUE_FLAGS = new Set(['repo', 'mode', 'limit', 'intent', 'format', 'budget', 'scope', 'out', 'since', 'prefix', 'samples', 'host', 'mcp-command', 'db', 'seed']);
+const VALUE_FLAGS = new Set(['repo', 'mode', 'limit', 'intent', 'format', 'budget', 'scope', 'out', 'since', 'prefix', 'samples', 'host', 'mcp-command', 'db', 'seed', 'port', 'daemon', 'active-file', 'command']);
 
 export function parseArgs(argv: string[]): { positional: string[]; flags: Record<string, string | true> } {
 	const positional: string[] = []; const flags: Record<string, string | true> = {};
@@ -45,6 +48,15 @@ export async function executeRiaf2(cmd: string, argv: string[], io: { log: (s: s
 		return 0;
 	}
 
+	if (cmd === 'serve') {
+		const daemon = findDaemon(str('daemon'));
+		if (!daemon) { io.log('riaf serve: cannot find daemon.mjs — pass --daemon <path to riaf-vscode/dist/daemon.mjs> or set RIAF_DAEMON'); return 2; }
+		const args = [daemon, '--workspace', repo, ...(str('db') ? ['--db', str('db')!] : []), ...(str('port') ? ['--port', str('port')!] : []), ...(flags.open ? ['--open'] : []), ...(flags.reindex ? ['--reindex'] : []), ...(flags['no-govern'] ? ['--no-govern'] : [])];
+		io.log(`starting RIAF Console: node ${args.join(' ')}`);
+		const child = spawn(process.execPath, args, { stdio: 'inherit' });
+		return new Promise<number>(res => child.on('exit', code => res(code ?? 0)));
+	}
+
 	const dbPath = str('db') ?? join(repo, '.riaf', 'index.sqlite');
 	mkdirSync(join(repo, '.riaf'), { recursive: true });
 	const riaf = await Riaf2.open({ workspaceRoot: repo, dbPath, log: flags.verbose ? io.log : undefined });
@@ -60,7 +72,22 @@ export async function executeRiaf2(cmd: string, argv: string[], io: { log: (s: s
 			await riaf.history?.mine().catch(() => undefined);
 		}
 
-		if (cmd === 'search') {
+		if (cmd === 'classify' || cmd === 'instruct') {
+		const request = str('intent') ?? positional.join(' ');
+		if (!request) { io.log(`usage: riaf ${cmd} "<task>" [--active-file path] [--command plan|explain|verify]`); await riaf.close(); return 2; }
+		const arch = await riaf.architecture().catch(() => null);
+		const route = await routeIntent(request, { root: repo, activeFile: str('active-file'), command: str('command'), architectureSummary: arch?.summary });
+		if (cmd === 'classify') { io.log(flags.json ? JSON.stringify(route, null, 2) : formatRouteLine(route) + (route.askFirst ? `\nWould ask first:\n${route.questions.map(q => `- ${q}`).join('\n')}` : '')); await riaf.close(); return 0; }
+		const pack = await riaf.compile(request, { budget: parseBudget(str('budget'), route.budget), stage: route.stage, scope: route.scope, activeFile: str('active-file') });
+		const instruction = buildInstruction(pack, { route, root: repo, host: (str('host') as 'claude' | 'copilot' | 'generic' | undefined) ?? 'claude' });
+		const saved = saveInstruction(repo, instruction);
+		if (str('out')) writeFileSync(str('out')!, instruction.markdown);
+		io.log(flags.quiet ? `${formatRouteLine(route, { items: pack.items.length, tokens: pack.budget.used_tokens })}\nsaved ${saved.currentPath}` : instruction.markdown);
+		await riaf.close();
+		return 0;
+	}
+
+	if (cmd === 'search') {
 			const q = positional.join(' ');
 			if (!q) { io.log('usage: riaf search <query>'); return 2; }
 			const hits = await riaf.search(q, { mode: (str('mode') as 'hybrid' | 'lexical' | 'structural' | undefined), limit: Number(str('limit') ?? 10) }) as Array<Record<string, unknown>>;
@@ -104,4 +131,12 @@ export async function executeRiaf2(cmd: string, argv: string[], io: { log: (s: s
 	} finally {
 		await riaf.close();
 	}
+}
+
+/** Locate the daemon bundle: explicit flag, RIAF_DAEMON, or the extension's dist next to this package. */
+export function findDaemon(explicit?: string): string | undefined {
+	// Resolved relative to the running bundle / dist dir (works in ESM and CJS bundles, and in the VS Code extension host).
+	const here = typeof __dirname === 'string' ? __dirname : process.cwd();
+	const candidates = [explicit, process.env.RIAF_DAEMON, join(here, '..', '..', 'extension', 'dist', 'daemon.mjs'), join(here, '..', 'dist', 'daemon.mjs'), join(here, 'daemon.mjs'), join(process.cwd(), 'packages', 'extension', 'dist', 'daemon.mjs')].filter((p): p is string => !!p);
+	return candidates.find(p => existsSync(p));
 }

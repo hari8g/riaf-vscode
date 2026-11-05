@@ -11,7 +11,9 @@ export interface RiafSettings {
 	};
 	usage: { readClaudeCodeTranscripts: boolean };
 	claudeCode: { writeUserSettings: boolean; proxyUrl: string; noProxy: string[]; caCertPath: string; proxyBridge: boolean; proxyBridgePort: number };
-	models: { main: string; plan: string; summary: string; explore: string; critic: string; commit: string; autocomplete: string };
+	models: { main: string; plan: string; summary: string; explore: string; critic: string; commit: string; autocomplete: string; classify: string };
+	/** RIAF 2.0 intent routing and Prompt Instruction (Design A/B/C). */
+	instruction: { intentRouting: boolean; arbiter: boolean; planGate: 'off' | 'default' | 'all'; exploreLane: boolean; autoRun: boolean; showCard: boolean; hookBudget: number };
 	general: { aiInstructions: string; disableSystemPrompt: boolean; metricsOptOut: boolean };
 	webSearch: { enabled: boolean; provider: 'tavily' | 'gateway' };
 	security: { extraRules: { id: string; pattern: string; message: string }[] };
@@ -90,6 +92,16 @@ export function readSettings(): RiafSettings {
 			main: c.get('models.main', ''), plan: c.get('models.plan', ''), summary: c.get('models.summary', ''),
 			explore: c.get('models.explore', ''), critic: c.get('models.critic', ''), commit: c.get('models.commit', ''),
 			autocomplete: c.get('models.autocomplete', ''),
+			classify: c.get('models.classify', ''),
+		},
+		instruction: {
+			intentRouting: c.get('instruction.intentRouting', true),
+			arbiter: c.get('instruction.arbiter', true),
+			planGate: c.get<'off' | 'default' | 'all'>('instruction.planGate', 'default'),
+			exploreLane: c.get('instruction.exploreLane', true),
+			autoRun: c.get('instruction.autoRun', true),
+			showCard: c.get('instruction.showCard', true),
+			hookBudget: c.get('instruction.hookBudget', 12_000),
 		},
 		general: {
 			aiInstructions: c.get('general.aiInstructions', ''),
