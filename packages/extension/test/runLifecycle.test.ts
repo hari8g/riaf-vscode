@@ -132,3 +132,35 @@ describe('every prompt is a fresh run: earlier runs are switched off, saved and 
 		await keep.stop();
 	});
 });
+
+import { spawn } from 'node:child_process';
+import { liveGovernorOwner } from '../src/riaf2Host.js';
+
+describe('who owns the hooks', () => {
+	it('startGovernor is idempotent, and a background process leaves a live owner alone but replaces a dead one', async () => {
+		const d = mkdtempSync(join(tmpdir(), 'riaf-own-')); mkdirSync(join(d, '.riaf'), { recursive: true });
+		const sleeper = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 20000)'], { stdio: 'ignore' });
+		try {
+			expect(liveGovernorOwner(d)).toBeNull(); // no file
+			writeFileSync(join(d, '.riaf', 'governor.json'), JSON.stringify({ pid: sleeper.pid }));
+			expect(liveGovernorOwner(d)).toBe(sleeper.pid); // a live console owns it: do not take it
+			expect(liveGovernorOwner(d, sleeper.pid)).toBeNull(); // that is us
+			sleeper.kill(); await new Promise(r => sleeper.once('exit', r));
+			expect(liveGovernorOwner(d)).toBeNull(); // the owner died: take over
+			writeFileSync(join(d, '.riaf', 'governor.json'), 'not json');
+			expect(liveGovernorOwner(d)).toBeNull();
+		} finally { sleeper.kill(); rmSync(d, { recursive: true, force: true }); }
+	});
+
+	it('a host asked twice to listen keeps one endpoint', async () => {
+		const d = mkdtempSync(join(tmpdir(), 'riaf-gov-')); const r = join(d, 'repo'); mkdirSync(join(r, 'src'), { recursive: true });
+		writeFileSync(join(r, 'src', 'a.ts'), 'export const a = 1;\n'); git(r, 'init', '-q', '-b', 'main'); git(r, 'add', '-A'); git(r, 'commit', '-q', '-m', 'i');
+		const rf = await Riaf2.open({ workspaceRoot: r, dbPath: join(d, 'i.sqlite'), persistDebounceMs: 20 });
+		const h = new Riaf2Host(rf, { host: 'test' });
+		try {
+			const a = await h.startGovernor(); const b = await h.startGovernor();
+			expect(b).toBe(a); expect(h.governing).toBe(true);
+			expect(JSON.parse(readFileSync(join(r, '.riaf', 'governor.json'), 'utf8')).pid).toBe(process.pid);
+		} finally { await h.stop(); await rf.close(); rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); }
+	});
+});

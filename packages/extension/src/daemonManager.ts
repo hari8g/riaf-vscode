@@ -47,6 +47,8 @@ export class DaemonManager {
 		});
 		this.root = folder.uri.fsPath;
 		this.info = await this.daemon.start(c().get<number>('console.port', 7421));
+		// The console must own the hooks, or Sessions and the live feed see nothing. Starting last takes over from a Claude Code MCP server.
+		host.startGovernor().then(ep => this.indexes.log(`[riafd] governor endpoint ${ep}`), e => this.indexes.log(`[riafd] governor not started: ${String(e)}`));
 		return this.info;
 	}
 

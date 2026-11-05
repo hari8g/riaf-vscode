@@ -17,7 +17,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { RiafIndex, Riaf2, setSqliteModuleLoader, setTreeSitterWasmDir } from '@bosch-mps/riaf-core';
-import { Riaf2Host } from './riaf2Host.js';
+import { liveGovernorOwner, Riaf2Host } from './riaf2Host.js';
 import { formatRouteLine } from '@bosch-mps/riaf-core';
 import { recordToolCall, toolStatsPathFor } from './toolStats.js';
 import { FileLedger, nextReadySubtasks, renderLedger, verifySubtask } from '@bosch-mps/riaf-engine';
@@ -57,7 +57,9 @@ void (async () => {
 		log(`history: ${mined?.totalCommits ?? 0} commits (${mined?.newCommits ?? 0} new); summaries: ${sums.regenerated} regenerated`);
 	} catch (e) { log(`history/summaries skipped: ${String(e)}`); }
 })();
-if (!args.includes('--no-govern')) {
+const governorOwner = args.includes('--no-govern') ? null : liveGovernorOwner(riaf2.root);
+if (governorOwner !== null) log(`governor left to the RIAF Console (pid ${governorOwner}); hooks keep reporting there`);
+else if (!args.includes('--no-govern')) {
 	host.startGovernor().then(ep => log(`governor endpoint ${ep}`), e => log(`governor endpoint not started: ${String(e)}`));
 }
 

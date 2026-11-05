@@ -65,6 +65,19 @@ export function treeVersionFn(root: string, memoMs = 400): () => string {
 	};
 }
 
+/**
+ * pid of ANOTHER live process that currently owns `<root>/.riaf/governor.json`, else null (no file, our own pid,
+ * or a stale file from a crashed process). Used so a background MCP server does not steal the hooks from a console.
+ */
+export function liveGovernorOwner(root: string, self = process.pid): number | null {
+	try {
+		const g = JSON.parse(readFileSync(join(root, '.riaf', 'governor.json'), 'utf8')) as { pid?: number };
+		if (!g.pid || g.pid === self) return null;
+		process.kill(g.pid, 0);
+		return g.pid;
+	} catch (e) { return (e as NodeJS.ErrnoException)?.code === 'EPERM' ? -1 : null; }
+}
+
 export class Riaf2Host {
 	private readonly governors = new Map<string, ToolGovernor>();
 	private readonly promptsSeen = new Set<string>();
@@ -493,7 +506,11 @@ export class Riaf2Host {
 		});
 	}
 
+	/** Is this process already the endpoint Claude Code's hooks talk to? */
+	get governing(): boolean { return this.server !== null; }
+
 	async startGovernor(): Promise<string> {
+		if (this.server && this.endpoint) return this.endpoint;
 		this.server = new GovernorServer(this.root, async msg => {
 			if (msg.type === 'claude-hook') return { output: await this.handleHook((msg.payload ?? {}) as ClaudeHookPayload) };
 			if (msg.type === 'status') return { text: this.statusText() };
