@@ -72,6 +72,33 @@ export class Riaf2Host {
 		this.treeVersion = treeVersionFn(riaf.root);
 		this.policy = loadPolicyFile(riaf.root);
 		this.log = o.log ?? (() => { });
+		try { riaf.store.raw.run('CREATE TABLE IF NOT EXISTS session_event(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, ts INTEGER NOT NULL, event TEXT NOT NULL, tool TEXT, path TEXT, decision TEXT, reason TEXT)'); riaf.store.raw.run('CREATE INDEX IF NOT EXISTS session_event_sid ON session_event(session_id, ts)'); } catch (e) { this.log(`session_event table: ${String(e)}`); }
+	}
+
+	/** Re-read .riaf/policy.yaml (the console edits it). */
+	reloadPolicy(): GovernorPolicy { this.policy = loadPolicyFile(this.riaf.root); return this.policy; }
+	get currentPolicy(): GovernorPolicy { return this.policy; }
+
+	/** Per-call timeline of a governed session (what the console's Sessions page shows). */
+	sessionEvents(sessionId: string, limit = 500): { id: number; ts: number; event: string; tool: string | null; path: string | null; decision: string | null; reason: string | null }[] {
+		return this.riaf.store.raw.all('SELECT id, ts, event, tool, path, decision, reason FROM session_event WHERE session_id = ? ORDER BY ts DESC, id DESC LIMIT ?', [sessionId, limit]);
+	}
+
+	sessions(limit = 200): { sessionId: string; host: string; startedAt: number; updatedAt: number; counters: GovernorMetrics }[] {
+		this.flushMetrics();
+		return this.riaf.store.raw.all<{ session_id: string; host: string; started_at: number; updated_at: number; counters: string }>('SELECT session_id, host, started_at, updated_at, counters FROM session_metric ORDER BY updated_at DESC LIMIT ?', [limit])
+			.map(r => ({ sessionId: r.session_id, host: r.host, startedAt: r.started_at, updatedAt: r.updated_at, counters: JSON.parse(r.counters) as GovernorMetrics }));
+	}
+
+	private recordEvent(p: ClaudeHookPayload, out: unknown): void {
+		try {
+			const hso = (out as { hookSpecificOutput?: Record<string, unknown> } | undefined)?.hookSpecificOutput;
+			const decision = hso ? (typeof hso.permissionDecision === 'string' ? hso.permissionDecision : hso.additionalContext ? 'context' : 'allow') : 'allow';
+			const reason = hso && typeof hso.permissionDecisionReason === 'string' ? hso.permissionDecisionReason.slice(0, 300) : hso && typeof hso.additionalContext === 'string' ? hso.additionalContext.split('\n')[0].slice(0, 300) : null;
+			const input = (p.tool_input ?? {}) as Record<string, unknown>;
+			const path = typeof input.file_path === 'string' ? this.relative(input.file_path) : typeof input.pattern === 'string' ? String(input.pattern).slice(0, 200) : typeof input.command === 'string' ? String(input.command).slice(0, 200) : null;
+			this.riaf.store.raw.run('INSERT INTO session_event(session_id, ts, event, tool, path, decision, reason) VALUES (?,?,?,?,?,?,?)', [p.session_id ?? 'default', Date.now(), p.hook_event_name ?? 'unknown', p.tool_name ?? null, path, decision, reason]);
+		} catch { /* telemetry only */ }
 	}
 
 	get root(): string { return this.riaf.root; }
@@ -204,6 +231,12 @@ export class Riaf2Host {
 
 	/** Claude Code hook entry point (called by the governor endpoint). */
 	async handleHook(payload: ClaudeHookPayload): Promise<unknown> {
+		const out = await this.handleHookInner(payload);
+		this.recordEvent(payload, out);
+		return out;
+	}
+
+	private async handleHookInner(payload: ClaudeHookPayload): Promise<unknown> {
 		return handleClaudeHook(payload, {
 			governorFor: this.governorFor,
 			log: m => this.log(`[govern] ${m}`),

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { executeCli } from '../src/cli.js';
-import { parseArgs } from '../src/riaf2Cli.js';
+import { findDaemon, parseArgs } from '../src/riaf2Cli.js';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'A', GIT_AUTHOR_EMAIL: 'a@x', GIT_COMMITTER_NAME: 'A', GIT_COMMITTER_EMAIL: 'a@x' } });
 
@@ -55,5 +55,39 @@ describe('riaf CLI (RIAF 2.0 commands)', () => {
 		const mcp = JSON.parse(readFileSync(join(dir, '.mcp.json'), 'utf8'));
 		expect(mcp.mcpServers.riaf).toEqual({ command: 'node', args: ['/opt/riaf/mcp.mjs', '--workspace', dir], env: {} });
 		expect(readFileSync(join(dir, 'CLAUDE.md'), 'utf8')).toMatch(/riaf_lookup/);
+	});
+});
+
+describe('riaf CLI (intent + instruction + serve)', () => {
+	let dir: string;
+	const out: string[] = [];
+	const run = (...argv: string[]) => executeCli([...argv, '--repo', dir], { log: l => out.push(l) });
+	beforeAll(() => {
+		dir = mkdtempSync(join(tmpdir(), 'riaf-cli2-'));
+		mkdirSync(join(dir, 'src'));
+		writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'cli-demo', scripts: { test: 'vitest run' } }));
+		writeFileSync(join(dir, 'src', 'auth.ts'), 'export function login(user: string): boolean {\n\treturn user.length > 0;\n}\n');
+		git(dir, 'init', '-q', '-b', 'main'); git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'feat: login');
+	});
+	afterAll(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+
+	it('classify prints the route; instruct saves current.md', async () => {
+		expect(await run('index')).toBe(0); out.length = 0;
+		expect(await run('classify', 'Fix login so empty user names are rejected')).toBe(0);
+		expect(out.join('\n')).toMatch(/^Intent: bugfix/);
+		out.length = 0;
+		expect(await run('classify', 'fix it')).toBe(0);
+		expect(out.join('\n')).toMatch(/Would ask first/);
+		out.length = 0;
+		expect(await run('instruct', 'Fix login so empty user names are rejected', '--budget', '4k', '--quiet')).toBe(0);
+		expect(out.join('\n')).toMatch(/pack: \d+ items/);
+		expect(existsSync(join(dir, '.claude', 'riaf', 'instructions', 'current.md'))).toBe(true);
+		expect(readFileSync(join(dir, '.claude', 'riaf', 'instructions', 'current.md'), 'utf8')).toMatch(/## Plan/);
+	});
+
+	it('findDaemon prefers the explicit path and falls back to the extension dist', () => {
+		expect(findDaemon('/nonexistent/x.mjs')).not.toBe('/nonexistent/x.mjs');
+		const ext = join(__dirname, '..', '..', 'extension', 'dist', 'daemon.mjs');
+		if (existsSync(ext)) { expect(findDaemon()).toBe(ext); }
 	});
 });

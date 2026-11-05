@@ -1,0 +1,90 @@
+/* The console reuses the settings-panel UI kit, which styles itself with VS Code theme variables.
+   Outside VS Code we define those variables for a light and a dark theme (prefers-color-scheme). */
+:root {
+  --vscode-editor-background: #ffffff;
+  --vscode-editor-foreground: #1f2328;
+  --vscode-foreground: #1f2328;
+  --vscode-descriptionForeground: #59636e;
+  --vscode-editorGroup-border: #d8dee4;
+  --vscode-input-background: #f6f8fa;
+  --vscode-input-foreground: #1f2328;
+  --vscode-input-border: #d0d7de;
+  --vscode-dropdown-background: #f6f8fa;
+  --vscode-dropdown-foreground: #1f2328;
+  --vscode-dropdown-border: #d0d7de;
+  --vscode-button-background: #0b5fff;
+  --vscode-button-foreground: #ffffff;
+  --vscode-button-secondaryBackground: #e7ecf2;
+  --vscode-button-secondaryForeground: #1f2328;
+  --vscode-list-activeSelectionBackground: #dbe7ff;
+  --vscode-list-activeSelectionForeground: #0b3d91;
+  --vscode-list-hoverBackground: #f0f3f6;
+  --vscode-textLink-foreground: #0b5fff;
+  --vscode-textBlockQuote-background: #f6f8fa;
+  --vscode-editorWarning-foreground: #b26a00;
+  --vscode-errorForeground: #c62828;
+  --vscode-testing-iconPassed: #1a7f37;
+  --vscode-editor-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --riaf-accent-tint: #eef3ff;
+  --riaf-chip: #eef1f5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --vscode-editor-background: #1e1f22;
+    --vscode-editor-foreground: #e6e6e6;
+    --vscode-foreground: #e6e6e6;
+    --vscode-descriptionForeground: #9aa4ae;
+    --vscode-editorGroup-border: #33363b;
+    --vscode-input-background: #2a2c31;
+    --vscode-input-foreground: #e6e6e6;
+    --vscode-input-border: #3d4046;
+    --vscode-dropdown-background: #2a2c31;
+    --vscode-dropdown-foreground: #e6e6e6;
+    --vscode-dropdown-border: #3d4046;
+    --vscode-button-background: #3b82f6;
+    --vscode-button-foreground: #ffffff;
+    --vscode-button-secondaryBackground: #34373d;
+    --vscode-button-secondaryForeground: #e6e6e6;
+    --vscode-list-activeSelectionBackground: #27405f;
+    --vscode-list-activeSelectionForeground: #dbe7ff;
+    --vscode-list-hoverBackground: #26282d;
+    --vscode-textLink-foreground: #6ea8ff;
+    --vscode-textBlockQuote-background: #26282d;
+    --vscode-editorWarning-foreground: #e0a52c;
+    --vscode-errorForeground: #ff6b6b;
+    --vscode-testing-iconPassed: #3fb950;
+    --riaf-accent-tint: #1f2a3d;
+    --riaf-chip: #2c2f35;
+  }
+}
+html, body { margin: 0; height: 100%; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 13px; color: var(--vscode-foreground); background: var(--vscode-editor-background); }
+code, pre, .mono { font-family: var(--vscode-editor-font-family); font-size: 12px; }
+pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
+a { color: var(--vscode-textLink-foreground); text-decoration: none; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--vscode-editorGroup-border); vertical-align: top; font-size: 12px; }
+th { font-weight: 600; color: var(--vscode-descriptionForeground); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover { background: var(--vscode-list-hoverBackground); }
+.chip { display: inline-block; padding: 1px 7px; border-radius: 10px; background: var(--riaf-chip); font-size: 11px; margin-right: 4px; white-space: nowrap; }
+.chip.hot { background: #ffe3e3; color: #a40000; }
+.chip.test { background: #e3f3e6; color: #0f5a1f; }
+.chip.accent { background: var(--riaf-accent-tint); color: var(--vscode-textLink-foreground); }
+@media (prefers-color-scheme: dark) { .chip.hot { background: #4a1f1f; color: #ffb3b3; } .chip.test { background: #1f3a26; color: #b3e6c0; } }
+.panel { border: 1px solid var(--vscode-editorGroup-border); border-radius: 6px; padding: 12px 14px; background: var(--vscode-editor-background); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.stack { display: flex; flex-direction: column; gap: 10px; }
+.rowflex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.muted { color: var(--vscode-descriptionForeground); }
+.nav a { display: block; padding: 6px 10px; border-radius: 4px; color: inherit; margin-bottom: 2px; }
+.nav a.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); font-weight: 600; }
+.nav a:hover:not(.active) { background: var(--vscode-list-hoverBackground); }
+.md h1, .md h2, .md h3, .md h4 { margin: 14px 0 6px; } .md h1 { font-size: 16px } .md h2 { font-size: 14px } .md h3 { font-size: 13px } .md h4 { font-size: 12px }
+.md pre { background: var(--vscode-textBlockQuote-background); padding: 8px 10px; border-radius: 4px; overflow: auto; max-height: 320px; }
+.md table td, .md table th { border: 1px solid var(--vscode-editorGroup-border); }
+.md input[type=checkbox] { margin-right: 6px }
+.bar { height: 6px; border-radius: 3px; background: var(--riaf-chip); overflow: hidden; } .bar > span { display: block; height: 100%; background: var(--vscode-button-background); }
+.kbd { font-family: var(--vscode-editor-font-family); font-size: 11px; padding: 1px 5px; border: 1px solid var(--vscode-input-border); border-radius: 3px; background: var(--vscode-input-background); }
+.tree li { list-style: none; padding: 2px 0; } .tree ul { padding-left: 16px; margin: 0; } .tree .dir { cursor: pointer; font-weight: 600; } .tree .file { cursor: pointer; } .tree .file:hover, .tree .file.sel { color: var(--vscode-textLink-foreground); }

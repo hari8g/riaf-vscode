@@ -66,20 +66,8 @@ export async function setProxyCredentials(ctx: vscode.ExtensionContext): Promise
  */
 import type { ProxyBridgeManager } from './proxyBridgeManager.js';
 
-/** Is <root>/.mcp.json set up for RIAF, and does it still point somewhere valid? (pure: used by the panel, Doctor and tests) */
-export function mcpJsonStatus(root: string, extensionPath: string): { present: boolean; stale?: string; entry?: string } {
-	try {
-		const riafSrv = JSON.parse(readFileSync(join(root, '.mcp.json'), 'utf8')).mcpServers?.riaf as { args?: string[] } | undefined;
-		if (!riafSrv) { return { present: false }; }
-		const entry = riafSrv.args?.[0];
-		if (!entry) { return { present: true, stale: 'has no server path' }; }
-		if (!existsSync(entry)) { return { present: true, entry, stale: `server path no longer exists (${entry})` }; }
-		if (/riaf-vscode-\d/.test(entry)) {
-			return { present: true, entry, stale: entry.startsWith(extensionPath) ? 'points at a versioned extension folder; re-run setup to use the version-independent launcher' : `points at an older extension version (${entry})` };
-		}
-		return { present: true, entry };
-	} catch { return { present: false }; }
-}
+export { mcpJsonStatus } from './claudeCodeStatus.js';
+import { mcpJsonStatus } from './claudeCodeStatus.js';
 
 export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: IndexManager, bridgeMgr?: ProxyBridgeManager): Promise<void> {
 	const folder = indexes.folderFor(vscode.window.activeTextEditor?.document.uri);

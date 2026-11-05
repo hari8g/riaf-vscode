@@ -41,6 +41,7 @@ export const SETTING_KEYS = [
 	'claudeCode.writeUserSettings', 'claudeCode.proxyUrl', 'claudeCode.noProxy', 'claudeCode.caCertPath', 'claudeCode.proxyBridge', 'claudeCode.proxyBridgePort',
 	'models.main', 'models.plan', 'models.summary', 'models.explore', 'models.critic', 'models.commit', 'models.autocomplete', 'models.classify',
 	'instruction.intentRouting', 'instruction.arbiter', 'instruction.planGate', 'instruction.exploreLane', 'instruction.showCard', 'instruction.autoRun', 'instruction.hookBudget',
+	'console.port', 'console.autoStart',
 	'general.aiInstructions', 'general.disableSystemPrompt', 'general.metricsOptOut',
 	'webSearch.enabled', 'webSearch.provider', 'security.extraRules', 'mcp.disabledServers',
 	'providers', 'agent.approveTerminal', 'agent.approveMcp',

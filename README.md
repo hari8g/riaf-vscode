@@ -209,6 +209,44 @@ Commit `.mcp.json`, `.claude/` and `CLAUDE.md` so the whole team gets it. The MC
 node ~/.vscode/extensions/bosch-mps.riaf-vscode-0.1.0/dist/mcp.mjs --workspace /path/to/repo [--db /path/to/index.sqlite] [--reindex]
 ```
 
+## 6b. RIAF 2.1: intent routing, the Prompt Instruction and the Console
+
+**Every `@riaf` request is classified before any model loop starts.** Tier 1 is an offline lexicon
+(`bugfix | feature | refactor | explain | test | migrate | review`, with entities, constraints and
+acceptance criteria); tier 2 is one small model call (`riaf.models.classify`) only when the lexicon is
+unsure or the request is multi-intent; tier 3 is your own corrections (`.riaf/intent-feedback.jsonl`,
+the **Wrong intent?** button). The route decides the agent mode, the tool set, the pack budget and
+whether a **plan gate** applies (feature and migrate tasks show the plan and wait before editing;
+`riaf.instruction.planGate`).
+
+The Context Pack is compiled with the route's budget, a read-only **exploration lane** runs while the
+plan is generated, and everything is assembled into one **Prompt Instruction** — conventions,
+architecture, project rules, protocol, task, plan (with evidence from the lane), verification
+checklist, governor budgets, history and the pack items — saved under
+`.claude/riaf/instructions/<id>.md` (`current.md` = the latest). The chat reply shows the route line,
+the instruction (collapsed) and three buttons: **Send to Claude Code**, **Edit instruction**, **Wrong intent?**.
+
+**Send to Claude Code** writes the instruction through every door Claude Code has — the
+`UserPromptSubmit` hook (re-compiles when the intent changes), `/riaf-task <text>` and
+`/riaf-instruction` slash commands, a managed `<!-- riaf:instruction -->` block in `CLAUDE.md` (stable
+half only, so it caches), the `riaf_instruction` / `riaf_classify` MCP tools and the
+`riaf://instruction/current` resource — and can open a terminal running `claude` with it.
+
+**RIAF Console** (`RIAF: Open Console`, or `riaf serve --open` from a terminal) is a local web UI over
+the same index: *Overview* (index, history, tokens saved, Claude Code setup state), *Repository* (file
+tree with hot-spot / test / importer chips, outline, neighbourhood, history, search), *Pack Studio*
+(live classification while you type, compile, items with their *why*, render for claude / copilot /
+openai / gemini / agents-md, Send to Claude Code, compare earlier instructions), *Adapters* (Jira,
+Confluence, GitLab, knowledge stores: settings, credentials, health test, tools, audit log),
+*Governance* (`.riaf/policy.yaml`, `.riafrules`, rule files, installed hooks) and *Sessions* (every
+governed session with the governor's decision per tool call). It binds to `127.0.0.1` only, with a
+per-start token in `.riaf/daemon.json`. Inside VS Code it runs in the extension host (one SQLite
+writer); standalone it is `node <extension>/dist/daemon.mjs --workspace <repo> [--port 7421] [--open]`.
+
+Settings: `riaf.instruction.*` (intentRouting, arbiter, planGate, exploreLane, showCard, autoRun,
+hookBudget), `riaf.models.classify`, `riaf.console.port`, `riaf.console.autoStart` — all in
+**RIAF: Open Settings → Intent & Instruction**.
+
 ## 7. Commands (Command Palette)
 
 `Ctrl+Shift+P` / `Cmd+Shift+P`, then type `RIAF:`
@@ -221,6 +259,10 @@ node ~/.vscode/extensions/bosch-mps.riaf-vscode-0.1.0/dist/mcp.mjs --workspace /
 | **RIAF: Show Context Graph** | Interactive import graph (drag to pan, wheel to zoom; node size = degree) |
 | **RIAF: Set up Claude Code (MCP + plugin)** | Writes `.mcp.json`, `.claude/commands`, `CLAUDE.md` rules (§6) |
 | **RIAF: Doctor (index, embeddings, gateway)** | Health report; run this first when anything misbehaves |
+| **RIAF: Open Console (web UI)** | The RIAF Console in your browser (§6b) |
+| **RIAF: Compile instruction (classify + pack)** | Route a task and build its Prompt Instruction without running the agent |
+| **RIAF: Send instruction to Claude Code** | Write the current instruction through hook, slash commands, CLAUDE.md and MCP; optionally launch `claude` |
+| **RIAF: Open current instruction** | `.claude/riaf/instructions/current.md` in an editor |
 | **RIAF: Show Token Usage** | Session and all-time token/cost table |
 | **RIAF: Rewind** | Restore files and/or conversation from a checkpoint |
 

@@ -1716,6 +1716,12 @@
         "command": "riaf.intentFeedback",
         "title": "RIAF: Correct intent classification",
         "category": "RIAF"
+      },
+      {
+        "command": "riaf.openConsole",
+        "title": "RIAF: Open Console (web UI)",
+        "category": "RIAF",
+        "icon": "$(globe)"
       }
     ],
     "configuration": {
@@ -2362,6 +2368,16 @@
           "type": "number",
           "default": 12000,
           "description": "Token budget of the Context Pack the Claude Code UserPromptSubmit hook injects per task."
+        },
+        "riaf.console.port": {
+          "type": "number",
+          "default": 7421,
+          "description": "Port of the RIAF Console (local daemon, loopback only). A busy port falls back to a free one."
+        },
+        "riaf.console.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start the RIAF Console daemon when the extension activates (otherwise on RIAF: Open Console)."
         }
       }
     },
@@ -2457,6 +2473,9 @@
         {
           "command": "riaf.intentFeedback",
           "when": "false"
+        },
+        {
+          "command": "riaf.openConsole"
         }
       ]
     },
@@ -2517,7 +2536,7 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p webview/tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p webview/tsconfig.json --noEmit && tsc -p console/tsconfig.json --noEmit",
     "test": "vitest run",
     "vendor": "node scripts/vendor-sqlite.mjs",
     "package": "npm run typecheck && node esbuild.mjs --production && npm run vendor && node scripts/vsce-package.mjs"

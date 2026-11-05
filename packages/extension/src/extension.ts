@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { registerChatParticipant } from './chatParticipant.js';
+import { DaemonManager } from './daemonManager.js';
 import { mcpJsonStatus, setProxyCredentials, setupClaudeCode } from './claudeCodeSetup.js';
 import { ProxyBridgeManager } from './proxyBridgeManager.js';
 import { readSettings, usesGateway } from './config.js';
@@ -55,6 +56,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 	registerPackFeatures(ctx, indexes);
 	registerChatParticipant(ctx, indexes, usage);
 	registerEditorExtras(ctx, indexes, usage, getTransport);
+	new DaemonManager(ctx, indexes, bridge).register();
 
 	// status bar: tokens saved
 	const saved = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 10);

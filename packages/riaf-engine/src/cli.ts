@@ -58,7 +58,7 @@ export async function executeCli(argv: string[], io: CliIo = {}): Promise<number
 		log(renderLedger(run));
 		return run.status === 'done' ? 0 : 1;
 	}
-	if (cmd !== 'run' && cmd !== 'resume') { log('usage: riaf run "<task>" --repo . [--gateway URL --model NAME] | riaf status | riaf resume [id]\n       riaf index | search <q> | pack --intent "<task>" [--format md|json|claude|copilot|openai|gemini|agents-md] [--budget 32k] | history <path> | eval | init --host claude'); return 2; }
+	if (cmd !== 'run' && cmd !== 'resume') { log('usage: riaf run "<task>" --repo . [--gateway URL --model NAME] | riaf status | riaf resume [id]\n       riaf index | search <q> | pack --intent "<task>" [--format md|json|claude|copilot|openai|gemini|agents-md] [--budget 32k] | history <path> | eval | init --host claude\n       riaf classify "<task>" | instruct "<task>" [--budget 16k] [--out file] | serve [--port 7421] [--open]'); return 2; }
 	const goal = cmd === 'run' ? (rest.find(a => !a.startsWith('--') && rest[rest.indexOf(a) - 1] !== '--repo' && rest[rest.indexOf(a) - 1] !== '--gateway' && rest[rest.indexOf(a) - 1] !== '--model') ?? '') : '';
 	if (cmd === 'run' && !goal) { log('riaf run needs a task string'); return 2; }
 	const gateway = flag(rest, 'gateway');
