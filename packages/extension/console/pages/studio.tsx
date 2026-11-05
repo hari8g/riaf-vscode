@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { RunPanel } from '../run.js';
 import { api, type Instruction, type PackItem, type PackMeta, type Route, type Status } from '../api.js';
 import { Arc, Btn, Chip, Drawer, Empty, fmtK, shortPath, useToast } from '../kit.js';
 import { mdToHtml } from '../md.js';
@@ -109,6 +110,8 @@ export function Studio({ status, refresh, go }: { status: Status | null; refresh
 					</div>
 				)}
 			</section>
+
+			<div style={{ marginTop: 18 }}><RunPanel go={(page, q) => go(page as Page, q)} /></div>
 
 			{pack && instr ? (
 				<div className="stack" style={{ marginTop: 18 }}>

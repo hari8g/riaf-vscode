@@ -4,7 +4,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import {
 	blobHash, buildInstruction, formatRouteLine, loadCurrentInstruction, rebudget, render, Riaf2, routeIntent, saveInstruction,
@@ -14,6 +14,7 @@ import {
 	formatMetrics, GovernorServer, handleClaudeHook, loadPolicyFile, ToolGovernor,
 	type CacheEntry, type CacheStore, type ClaudeHookPayload, type GovernorBackend, type GovernorMetrics, type GovernorPolicy,
 } from '@bosch-mps/token-opt';
+import { buildRunReport, classifyEvent, eventDetail, summarizeRun, type EventDetail, type RunEvent, type RunReport, type RunSummary } from './runReport.js';
 
 export interface Riaf2HostOptions {
 	host?: string;
@@ -61,7 +62,10 @@ export class Riaf2Host {
 	private readonly promptsSeen = new Set<string>();
 	/** Last route per Claude session: a new pack is compiled only when the intent type or entities change. */
 	private readonly lastRoute = new Map<string, { type: string; entities: string }>();
+	/** Brief attached to each Claude session's latest prompt (recorded on the event so reports survive later recompiles). */
+	private readonly lastInstruction = new Map<string, { id: string; intent: string; request: string; plan: string[]; verify: string[]; pack: string[] }>();
 	private server: GovernorServer | null = null;
+	private endpoint: string | null = null;
 	private readonly treeVersion: () => string;
 	private policy: GovernorPolicy;
 	private readonly log: (m: string) => void;
@@ -73,13 +77,15 @@ export class Riaf2Host {
 		this.policy = loadPolicyFile(riaf.root);
 		this.log = o.log ?? (() => { });
 		try { riaf.store.raw.run('CREATE TABLE IF NOT EXISTS session_event(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, ts INTEGER NOT NULL, event TEXT NOT NULL, tool TEXT, path TEXT, decision TEXT, reason TEXT)'); riaf.store.raw.run('CREATE INDEX IF NOT EXISTS session_event_sid ON session_event(session_id, ts)'); } catch (e) { this.log(`session_event table: ${String(e)}`); }
+		// Older databases predate the per-event detail column (what changed, test results, ...).
+		try { riaf.store.raw.run('ALTER TABLE session_event ADD COLUMN detail TEXT'); } catch { /* already there */ }
 	}
 
 	/** Re-read .riaf/policy.yaml (the console edits it). */
 	reloadPolicy(): GovernorPolicy { this.policy = loadPolicyFile(this.riaf.root); return this.policy; }
 	get currentPolicy(): GovernorPolicy { return this.policy; }
 
-	/** Per-call timeline of a governed session (what the console's Sessions page shows). */
+	/** Raw per-call rows of a session (newest first); the console's run views use `runEvents`. */
 	sessionEvents(sessionId: string, limit = 500): { id: number; ts: number; event: string; tool: string | null; path: string | null; decision: string | null; reason: string | null }[] {
 		return this.riaf.store.raw.all('SELECT id, ts, event, tool, path, decision, reason FROM session_event WHERE session_id = ? ORDER BY ts DESC, id DESC LIMIT ?', [sessionId, limit]);
 	}
@@ -90,6 +96,105 @@ export class Riaf2Host {
 			.map(r => ({ sessionId: r.session_id, host: r.host, startedAt: r.started_at, updatedAt: r.updated_at, counters: JSON.parse(r.counters) as GovernorMetrics }));
 	}
 
+	/* ───────── live run views (console) ───────── */
+
+	private toRunEvent(r: { id: number; session_id: string; ts: number; event: string; tool: string | null; path: string | null; decision: string | null; reason: string | null; detail: string | null }): RunEvent {
+		let detail: EventDetail | null = null;
+		if (r.detail) { try { detail = JSON.parse(r.detail) as EventDetail; } catch { detail = null; } }
+		const base = { event: r.event, tool: r.tool, path: r.path, decision: r.decision, reason: r.reason, detail };
+		return { id: r.id, sessionId: r.session_id, ts: r.ts, ...base, ...classifyEvent(base) };
+	}
+
+	/** Events of one session in chronological order; `since` returns only newer rows (the live feed's cursor). */
+	runEvents(sessionId: string, opts: { since?: number; limit?: number } = {}): RunEvent[] {
+		const limit = opts.limit ?? 4000;
+		const rows = opts.since
+			? this.riaf.store.raw.all<Parameters<Riaf2Host['toRunEvent']>[0]>('SELECT id, session_id, ts, event, tool, path, decision, reason, detail FROM session_event WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?', [sessionId, opts.since, limit])
+			: this.riaf.store.raw.all<Parameters<Riaf2Host['toRunEvent']>[0]>('SELECT id, session_id, ts, event, tool, path, decision, reason, detail FROM (SELECT * FROM session_event WHERE session_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC', [sessionId, limit]);
+		return rows.map(r => this.toRunEvent(r));
+	}
+
+	latestSessionId(): string | null {
+		return this.riaf.store.raw.all<{ session_id: string }>('SELECT session_id FROM session_event ORDER BY id DESC LIMIT 1')[0]?.session_id ?? null;
+	}
+
+	/** Every session that produced hook events (not only those the governor kept metrics for), newest activity first. */
+	runSummaries(limit = 50): (RunSummary & { host: string; counters: Record<string, unknown> })[] {
+		const ids = this.riaf.store.raw.all<{ session_id: string }>('SELECT session_id FROM session_event GROUP BY session_id ORDER BY MAX(id) DESC LIMIT ?', [limit]).map(r => r.session_id);
+		const metrics = new Map(this.sessions(500).map(m => [m.sessionId, m]));
+		const now = Date.now();
+		return ids.map(id => {
+			const sum = summarizeRun(id, this.runEvents(id, { limit: 4000 }), now);
+			const m = metrics.get(id);
+			return { ...sum, host: m?.host ?? 'claude', counters: (m?.counters as unknown as Record<string, unknown>) ?? {} };
+		});
+	}
+
+	/** One poll of the live feed: new events for a session (default: the most recent one) plus its summary. */
+	activity(since: number, sessionId?: string | null): { sessionId: string | null; events: RunEvent[]; cursor: number; summary: RunSummary | null; now: number } {
+		const sid = sessionId || this.latestSessionId();
+		const now = Date.now();
+		if (!sid) return { sessionId: null, events: [], cursor: since, summary: null, now };
+		const events = this.runEvents(sid, since ? { since } : { limit: 400 });
+		const all = since ? this.runEvents(sid, { limit: 4000 }) : events;
+		return { sessionId: sid, events, cursor: events.length ? events[events.length - 1].id : since, summary: summarizeRun(sid, all, now), now };
+	}
+
+	private git(args: string[]): string {
+		try { return execFileSync('git', args, { cwd: this.root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 4000, maxBuffer: 16 * 1024 * 1024 }).trim(); } catch { return ''; }
+	}
+
+	/** Files already modified or untracked right now: the baseline that keeps a run's report from claiming them. */
+	private dirtyFiles(): string[] {
+		const names = (out: string) => out.split('\n').filter(Boolean);
+		return [...new Set([...names(this.git(['diff', '--name-only', 'HEAD'])), ...names(this.git(['ls-files', '--others', '--exclude-standard']))])].slice(0, 400);
+	}
+
+	private gitFacts(startHead?: string, dirtyAtStart: string[] = [], editedByRun: string[] = []): NonNullable<RunReport['git']> | null {
+		const endHead = this.git(['rev-parse', 'HEAD']);
+		if (!endHead) return null;
+		const own = (f: string) => /^(\.riaf\/|\.claude\/riaf\/)/.test(f);
+		const changed = this.git(['diff', '--numstat', startHead || 'HEAD']).split('\n').filter(Boolean).map(l => { const [a, r, ...f] = l.split('\t'); return { file: f.join('\t'), added: Number(a) || 0, removed: Number(r) || 0 }; }).filter(c => c.file && !own(c.file));
+		const untracked = this.git(['ls-files', '--others', '--exclude-standard']).split('\n').filter(f => f && !own(f)).slice(0, 200);
+		// Only what changed during the run: skip files that were already dirty when the session began, unless the run edited them.
+		const before = new Set(dirtyAtStart), mine = new Set(editedByRun);
+		const attributable = (f: string) => !before.has(f) || mine.has(f);
+		return { branch: this.git(['rev-parse', '--abbrev-ref', 'HEAD']) || undefined, startHead, endHead, changed: changed.filter(c => attributable(c.file)), untracked: untracked.filter(attributable) };
+	}
+
+	/** What a session did: files, tests, governor effect, context quality, verified against git. */
+	runReport(sessionId: string): RunReport {
+		const events = this.runEvents(sessionId, { limit: 6000 });
+		const start = events.find(e => e.event === 'SessionStart' && e.detail?.head)?.detail;
+		const startHead = start?.head;
+		const editedByRun = events.filter(e => e.kind === 'edit' && e.detail?.file).map(e => e.detail!.file!);
+		const promptWithBrief = [...events].reverse().find(e => e.kind === 'prompt' && e.detail?.instruction)?.detail;
+		this.flushMetrics();
+		const metrics = this.sessions(500).find(m => m.sessionId === sessionId)?.counters as unknown as Record<string, unknown> | undefined;
+		return buildRunReport({
+			sessionId, events, metrics: metrics ?? null, now: Date.now(), git: this.gitFacts(startHead, start?.dirty, editedByRun),
+			instruction: promptWithBrief?.instruction ? { id: promptWithBrief.instruction, request: promptWithBrief.request ?? '', intent: promptWithBrief.intent ?? '', plan: promptWithBrief.plan ?? [], verification: promptWithBrief.verify ?? [], packPaths: promptWithBrief.pack ?? [] } : null,
+		});
+	}
+
+	/** Is Claude Code actually connected to this process? Used by the console to explain an empty Sessions page. */
+	hookHealth(): { governor: { listening: boolean; endpoint: string | null; fileEndpoint: string | null; ownedByThisProcess: boolean; otherPid: number | null }; hookScript: boolean; settingsPresent: boolean; events: Record<string, boolean>; missing: string[]; lastEventAt: number | null; eventsTotal: number } {
+		const required = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'];
+		let settings: { hooks?: Record<string, { hooks?: { command?: string }[] }[]> } = {};
+		const settingsFile = join(this.root, '.claude', 'settings.json');
+		try { settings = JSON.parse(readFileSync(settingsFile, 'utf8')); } catch { /* none */ }
+		const events: Record<string, boolean> = {};
+		for (const e of required) events[e] = (settings.hooks?.[e] ?? []).some(g => (g.hooks ?? []).some(h => typeof h.command === 'string' && h.command.includes('riaf-govern.mjs')));
+		let fileEndpoint: string | null = null, otherPid: number | null = null;
+		try { const g = JSON.parse(readFileSync(join(this.root, '.riaf', 'governor.json'), 'utf8')) as { endpoint?: string; pid?: number }; fileEndpoint = g.endpoint ?? null; if (g.pid && g.pid !== process.pid) otherPid = g.pid; } catch { /* none */ }
+		const last = this.riaf.store.raw.all<{ ts: number; n: number }>('SELECT MAX(ts) AS ts, COUNT(*) AS n FROM session_event')[0];
+		return {
+			governor: { listening: this.server !== null, endpoint: this.endpoint, fileEndpoint, ownedByThisProcess: !!this.endpoint && this.endpoint === fileEndpoint, otherPid },
+			hookScript: existsSync(join(this.root, '.claude', 'hooks', 'riaf-govern.mjs')), settingsPresent: existsSync(settingsFile),
+			events, missing: required.filter(e => !events[e]), lastEventAt: last?.ts ?? null, eventsTotal: last?.n ?? 0,
+		};
+	}
+
 	private recordEvent(p: ClaudeHookPayload, out: unknown): void {
 		try {
 			const hso = (out as { hookSpecificOutput?: Record<string, unknown> } | undefined)?.hookSpecificOutput;
@@ -97,8 +202,12 @@ export class Riaf2Host {
 			const reason = hso && typeof hso.permissionDecisionReason === 'string' ? hso.permissionDecisionReason.slice(0, 300) : hso && typeof hso.additionalContext === 'string' ? hso.additionalContext.split('\n')[0].slice(0, 300) : null;
 			const input = (p.tool_input ?? {}) as Record<string, unknown>;
 			const path = typeof input.file_path === 'string' ? this.relative(input.file_path) : typeof input.pattern === 'string' ? String(input.pattern).slice(0, 200) : typeof input.command === 'string' ? String(input.command).slice(0, 200) : null;
-			this.riaf.store.raw.run('INSERT INTO session_event(session_id, ts, event, tool, path, decision, reason) VALUES (?,?,?,?,?,?,?)', [p.session_id ?? 'default', Date.now(), p.hook_event_name ?? 'unknown', p.tool_name ?? null, path, decision, reason]);
-		} catch { /* telemetry only */ }
+			const sid = p.session_id ?? 'default';
+			let detail: EventDetail | null = eventDetail(p, this.relative);
+			if (p.hook_event_name === 'SessionStart') detail = { ...(detail ?? {}), head: this.git(['rev-parse', 'HEAD']) || undefined, branch: this.git(['rev-parse', '--abbrev-ref', 'HEAD']) || undefined, dirty: this.dirtyFiles() };
+			if (p.hook_event_name === 'UserPromptSubmit') { const li = this.lastInstruction.get(sid); if (li) detail = { ...(detail ?? {}), instruction: li.id, intent: li.intent, request: li.request, plan: li.plan, verify: li.verify, pack: li.pack }; }
+			this.riaf.store.raw.run('INSERT INTO session_event(session_id, ts, event, tool, path, decision, reason, detail) VALUES (?,?,?,?,?,?,?,?)', [sid, Date.now(), p.hook_event_name ?? 'unknown', p.tool_name ?? null, path, decision, reason, detail ? JSON.stringify(detail) : null]);
+		} catch (e) { this.log(`recordEvent: ${String(e)}`); }
 	}
 
 	get root(): string { return this.riaf.root; }
@@ -261,6 +370,7 @@ export class Riaf2Host {
 				this.promptsSeen.add(sid);
 				if (route.askFirst) return `RIAF could not classify this request confidently (${route.type}, ${route.confidence}). Before exploring, ask the developer:\n${route.questions.map(q => `- ${q}`).join('\n')}`;
 				const { pack, instruction } = await this.instruct(text, { route, budget: Math.min(route.budget, this.o.hookPackBudget ?? 12_000) });
+				this.lastInstruction.set(sid, { id: instruction.instruction_id, intent: route.type, request: text.slice(0, 300), plan: instruction.plan.slice(0, 12), verify: instruction.verification.slice(0, 12), pack: pack.items.map(i => i.path).slice(0, 40) });
 				return `RIAF compiled instruction ${instruction.instruction_id} for this task (${formatRouteLine(route, { items: pack.items.length, tokens: pack.budget.used_tokens })}; also at .claude/riaf/instructions/current.md and riaf://instruction/current).\n\n${instruction.markdown}`;
 			},
 		});
@@ -273,6 +383,7 @@ export class Riaf2Host {
 			return { error: `unknown message type ${String(msg.type)}` };
 		}, { log: this.log });
 		const info = await this.server.start();
+		this.endpoint = info.endpoint;
 		return info.endpoint;
 	}
 

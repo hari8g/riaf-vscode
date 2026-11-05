@@ -243,6 +243,17 @@ governed session with the governor's decision per tool call). It binds to `127.0
 per-start token in `.riaf/daemon.json`. Inside VS Code it runs in the extension host (one SQLite
 writer); standalone it is `node <extension>/dist/daemon.mjs --workspace <repo> [--port 7421] [--open]`.
 
+**Watching Claude Code work.** Studio has a *Claude Code activity* panel: while a run is going it shows
+each step as it happens (files read, searches, edits with line counts, test runs with pass/fail bars,
+calls RIAF answered from the index), polled every second; when Claude Code stops it switches to a
+*run report* (what was done, how, files changed checked against `git`, unit-test runs and whether the
+suite went red to green, context-pack hit rate, governor savings), downloadable as markdown. *Sessions*
+lists every session (including ones that never reached the governor), refreshes by itself, and its
+**Connection** checklist says why a session is missing (hooks not installed, another RIAF process
+owning `.riaf/governor.json`, no events received) with an **Install or update hooks** button. The
+report needs the `Stop`, `SessionEnd` and `PostToolUseFailure` hooks, so after upgrading re-run the
+install (`riaf init --host claude`, **RIAF: Set up Claude Code**, or the button) and restart Claude Code.
+
 Settings: `riaf.instruction.*` (intentRouting, arbiter, planGate, exploreLane, showCard, autoRun,
 hookBudget), `riaf.models.classify`, `riaf.console.port`, `riaf.console.autoStart` — all in
 **RIAF: Open Settings → Intent & Instruction**.
