@@ -29,6 +29,22 @@ export function isTestInvocation(command: string): boolean {
 	});
 }
 
+const EXPLORE_FIRST = /^(?:cat|head|tail|nl|less|bat|grep|egrep|fgrep|rg|find|fd|ls|tree|wc|file|stat|du|pwd|cd|which|type|echo|printf|sort|uniq|cut|tr|awk|jq|diff|git)$/;
+const EXPLORE_GIT = /^git\s+(?:--no-pager\s+)?(?:status|log|diff|show|ls-files|grep|branch|rev-parse|blame)\b/;
+/** Is the whole command looking around (reading, listing, searching) and nothing else? Redirects to files, sed -i and test runs make it not. */
+export function isExploreCommand(command: string): boolean {
+	if (!command.trim() || /(?:^|[^<>2&0-9])>{1,2}\s*(?!\/dev\/null|&)[^\s&]/.test(command) || /\bsed\s+-i|\btee\s|\$\(/.test(command) || isTestInvocation(command)) return false;
+	return command.split(/&&|\|\||;|\n|\|/).every(raw => {
+		const seg = raw.trim();
+		if (!seg) return true;
+		const first = seg.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/, '').split(/\s+/)[0].replace(/^.*\//, '');
+		if (first === 'git') return EXPLORE_GIT.test(seg.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/, ''));
+		if (first === 'sed') return /\bsed\s+-n\b/.test(seg);
+		if (first === 'awk') return !/system\(|>/.test(seg);
+		return EXPLORE_FIRST.test(first);
+	});
+}
+
 export const looksLikeTestCommand = (command: string): boolean => TEST_CMD.test(command);
 
 const num = (s: string | undefined): number => (s ? Number(s) : 0);
@@ -103,7 +119,7 @@ export interface EventDetail {
 	command?: string; failed?: boolean; tests?: TestRun; tail?: string;
 	head?: string; branch?: string; dirty?: string[];
 	instruction?: string; intent?: string; request?: string; pack?: string[]; plan?: string[]; verify?: string[];
-	desc?: string; brief?: string;
+	desc?: string; brief?: string; reads?: string[]; explore?: boolean; todos?: string[];
 }
 
 export interface HookLike { hook_event_name?: string; tool_name?: string; tool_input?: Record<string, unknown>; tool_response?: unknown; prompt?: string; error?: unknown }
@@ -151,10 +167,19 @@ export function eventDetail(p: HookLike, rel: (path: string) => string): EventDe
 		const text = responseText(ev === 'PostToolUseFailure' ? (p.error ?? p.tool_response) : p.tool_response);
 		const tests = looksLikeTestCommand(command) || /\d+ (passed|failed)|Tests:|test result:|\bpassing\b/.test(text) ? parseTestRun(command, text) : null;
 		const d: EventDetail = { command: command.slice(0, 400), ...(failed ? { failed } : {}) };
+		if (!tests && !failed && isExploreCommand(command)) { d.explore = true; const r = shellReadFiles(command); if (r.length) d.reads = r; }
 		if (tests) d.tests = tests;
 		else if (failed && isTestInvocation(command)) d.tests = { framework: 'unknown', passed: 0, failed: 0, skipped: 0, errors: 1, total: 0, ok: false };
 		if (failed || tests) d.tail = text.replace(ANSI, '').trim().split('\n').slice(-6).join('\n').slice(-500);
 		return d;
+	}
+	if (tool === 'TodoWrite') {
+		const todos = Array.isArray(input.todos) ? (input.todos as { content?: unknown }[]).map(t => String(t?.content ?? '').trim()).filter(Boolean).slice(0, 20) : [];
+		return todos.length ? { todos } : null;
+	}
+	if (tool === 'ExitPlanMode') {
+		const lines = String(input.plan ?? '').split('\n').map(l => l.replace(/^[\s#*\-\d.)]+/, '').trim()).filter(Boolean).slice(0, 12);
+		return { todos: lines, desc: 'plan' };
 	}
 	if (tool === 'Task') return { desc: String(input.description ?? input.subagent_type ?? 'sub-agent').slice(0, 160) };
 	if (tool.startsWith('mcp__riaf__')) {
@@ -166,7 +191,7 @@ export function eventDetail(p: HookLike, rel: (path: string) => string): EventDe
 
 /* ───────── event classification ───────── */
 
-export type EventKind = 'start' | 'prompt' | 'read' | 'search' | 'edit' | 'command' | 'test' | 'served' | 'blocked' | 'briefing' | 'subagent' | 'turn-end' | 'end' | 'riaf' | 'other';
+export type EventKind = 'start' | 'prompt' | 'read' | 'search' | 'edit' | 'command' | 'test' | 'served' | 'blocked' | 'briefing' | 'subagent' | 'turn-end' | 'end' | 'riaf' | 'plan' | 'other';
 
 export interface RunEvent {
 	id: number; sessionId: string; ts: number; event: string; tool: string | null; path: string | null; decision: string | null; reason: string | null;
@@ -201,6 +226,7 @@ export function classifyEvent(e: { event: string; tool: string | null; path: str
 		return { kind: 'edit', label: `${tool === 'Write' ? 'Wrote' : 'Edited'} ${f}${delta}${d?.failed ? ' (failed)' : ''}` };
 	}
 	if (tool === 'Bash') {
+		if (d?.explore && !d.tests) return { kind: 'search', label: `Looked around: ${short(d.reads?.length ? d.reads.join(', ') : (d.command ?? ''), 90)}` };
 		if (d?.tests) {
 			const t = d.tests;
 			return { kind: 'test', label: t.total ? `Ran tests (${t.framework}): ${t.passed} passed${t.failed ? `, ${t.failed} failed` : ''}${t.errors ? `, ${t.errors} errors` : ''}${t.skipped ? `, ${t.skipped} skipped` : ''}` : `Ran tests: ${d.command ? short(d.command, 60) : 'no summary found'} ${t.ok ? '' : '(failed)'}`.trim() };
@@ -209,6 +235,8 @@ export function classifyEvent(e: { event: string; tool: string | null; path: str
 	}
 	if (tool === 'Read') return { kind: 'read', label: `Read ${short(e.path ?? 'a file', 80)}` };
 	if (tool === 'Grep' || tool === 'Glob' || tool === 'LS') return { kind: 'search', label: `${tool === 'LS' ? 'Listed' : 'Searched'} ${short(e.path ?? '', 80)}`.trim() };
+	if (tool === 'TodoWrite') return { kind: 'plan', label: d?.todos?.length ? `Planned ${d.todos.length} steps: ${short(d.todos[0], 70)}` : 'Updated its todo list' };
+	if (tool === 'ExitPlanMode') return { kind: 'plan', label: `Proposed a plan${d?.todos?.[0] ? `: ${short(d.todos[0], 70)}` : ''}` };
 	if (tool === 'Task') return { kind: 'subagent', label: `Started a sub-agent: ${d?.desc ?? ''}`.trim() };
 	if (tool.startsWith('mcp__riaf__')) return { kind: 'riaf', label: `RIAF ${short(d?.desc ?? tool.slice('mcp__riaf__'.length), 90)}${d?.failed ? ' (failed)' : ''}` };
 	if (e.decision === 'context') return { kind: 'briefing', label: e.reason ? short(e.reason, 100) : 'RIAF added context' };
@@ -238,12 +266,15 @@ export interface RunSummary {
 
 export function summarizeRun(sessionId: string, events: RunEvent[], now: number): RunSummary {
 	const read = new Set<string>(), edited = new Set<string>();
+	const outside = (f: string): boolean => f.startsWith('../') || f.startsWith('/') || /^[A-Za-z]:[\\/]/.test(f) || f.startsWith('~');
 	let commands = 0, turns = 0, added = 0, removed = 0;
 	const runs: TestRun[] = [];
 	let title: string | null = null;
 	for (const e of events) {
 		if (e.kind === 'prompt') { turns++; if (!title && e.detail?.prompt) title = e.detail.prompt; }
-		else if (e.kind === 'read' && e.path && e.event === 'PostToolUse') read.add(e.path);
+		else if (e.kind === 'read' && e.path && e.event === 'PostToolUse') { if (!outside(e.path)) read.add(e.path); }
+		else if (e.kind === 'search' && e.event === 'PostToolUse' && e.detail?.reads) { for (const f of e.detail.reads) if (!outside(f)) read.add(f); }
+		else if (e.kind === 'edit' && e.detail?.file && outside(e.detail.file)) { /* outside the repo: not counted */ }
 		else if (e.kind === 'edit' && e.detail?.file) { edited.add(e.detail.file); added += e.detail.added ?? 0; removed += e.detail.removed ?? 0; }
 		else if (e.kind === 'command') commands++;
 		else if (e.kind === 'test' && e.detail?.tests) runs.push(e.detail.tests);
@@ -285,6 +316,7 @@ export interface RunReport {
 	context: { packItems: number; touched: number; touchedInPack: number; hitRate: number | null; missed: string[]; unused: string[] } | null;
 	git: { branch?: string; startHead?: string; endHead?: string; changed: { file: string; added: number; removed: number }[]; untracked: string[] } | null;
 	notes: string[];
+	plan: { stated: boolean; todos: string[]; steps: { text: string; seen: boolean | null }[]; seenCount: number };
 }
 
 const n = (v: unknown): number => Number(v) || 0;
@@ -321,8 +353,8 @@ export function buildRunReport(inp: ReportInput): RunReport {
 	for (const e of ev) {
 		if (e.kind === 'riaf' && e.event === 'PostToolUse') riafToolCalls++;
 		if (e.kind === 'command' && e.detail?.command && SHELL_WRITE_HINT.test(e.detail.command)) shellWrites++;
-		if (e.kind === 'command' && e.detail?.command && e.event === 'PostToolUse') for (const f of shellReadFiles(e.detail.command)) if (!isOutside(f)) shellRead.set(f, (shellRead.get(f) ?? 0) + 1);
-		if (e.kind === 'command' && e.detail?.command && /^\s*(?:cd\s+\S+\s*&&\s*)?(?:grep|rg|sed|cat|head|tail|find|ls|awk|wc)\b/.test(e.detail.command)) shellExploration++;
+		if ((e.kind === 'command' || e.kind === 'search') && e.detail?.command && e.event === 'PostToolUse') for (const f of shellReadFiles(e.detail.command)) if (!isOutside(f)) shellRead.set(f, (shellRead.get(f) ?? 0) + 1);
+		if ((e.kind === 'command' || e.kind === 'search') && e.detail?.command && (e.detail.explore || /^\s*(?:cd\s+\S+\s*&&\s*)?(?:grep|rg|sed|cat|head|tail|find|ls|awk|wc)\b/.test(e.detail.command))) shellExploration++;
 		if (e.event === 'PostToolUse' && e.kind === 'read' && e.path && isOutside(e.path)) { if (!outsideMap.has(e.path)) outsideMap.set(e.path, false); continue; }
 		if (e.event === 'PostToolUse' && e.kind === 'read' && e.path) { readMap.set(e.path, (readMap.get(e.path) ?? 0) + 1); readBefore.add(e.path); }
 		if (e.kind === 'edit' && e.detail?.file && !e.detail.failed && isOutside(e.detail.file)) { outsideMap.set(e.detail.file, true); continue; }
@@ -379,7 +411,7 @@ export function buildRunReport(inp: ReportInput): RunReport {
 		if (e.event === 'PreToolUse' && e.decision !== 'deny') continue; // allowed Pre events duplicate their Post event
 		if (e.kind === 'other' && e.decision !== 'deny') continue;
 		const last = steps[steps.length - 1];
-		if (last && last.kind === e.kind && (e.kind === 'read' || e.kind === 'search' || e.kind === 'served')) { last.count++; last.label = `${e.kind === 'read' ? 'Read' : e.kind === 'search' ? 'Searched' : 'Answered from the index:'} ${last.count} ${e.kind === 'served' ? 'calls' : e.kind === 'search' ? 'times' : 'files'}`; continue; }
+		if (last && last.kind === e.kind && !e.detail?.explore && (e.kind === 'read' || e.kind === 'search' || e.kind === 'served')) { last.count++; last.label = `${e.kind === 'read' ? 'Read' : e.kind === 'search' ? 'Searched' : 'Answered from the index:'} ${last.count} ${e.kind === 'served' ? 'calls' : e.kind === 'search' ? 'times' : 'files'}`; continue; }
 		steps.push({ ts: e.ts, kind: e.kind, label: e.label, count: 1 });
 	}
 
@@ -401,6 +433,28 @@ export function buildRunReport(inp: ReportInput): RunReport {
 	else if (pack || inp.instruction) summary.push(`Never called a RIAF tool${shellExploration ? `; explored with ${plural(shellExploration, 'shell command')} (grep/sed/cat/find) that the index could have answered` : ''}.`);
 	if (context && context.hitRate !== null) summary.push(`${context.touchedInPack} of the ${context.touched} existing files it touched were in the compiled context pack (${Math.round(context.hitRate * 100)}%).`);
 
+	// Planning: Claude's own todo list / plan mode, and which steps of the brief's plan the activity shows.
+	const todos: string[] = []; let proposedPlan = false;
+	for (const e of ev) { if (e.kind === 'plan' && e.event === 'PostToolUse' && e.detail?.todos) { if (e.tool === 'ExitPlanMode') proposedPlan = true; for (const t of e.detail.todos) if (!todos.includes(t)) todos.push(t); } }
+	const srcEdits = edited.filter(f => !f.isTest), lastEditTs = edited.reduce((a, f) => Math.max(a, f.lastTs), 0);
+	const facts = {
+		explored: exploredAll.size > 0 || riafToolCalls > 0,
+		wroteTest: testFilesTouched.length > 0 || newTestFiles.length > 0 || testRuns.some(t => !t.ok),
+		fixed: srcEdits.length > 0,
+		verified: testRuns.some(t => t.ts >= lastEditTs) && testRuns.length > 0,
+	};
+	const planSteps = (inp.instruction?.plan ?? []).map(text => {
+		let seen: boolean | null = null;
+		if (/reproduc|failing test|characteri[sz]ation|write (?:a )?(?:\w+ )?tests?|add (?:cases|tests?)/i.test(text)) seen = facts.wroteTest;
+		else if (/\brun\b|verify|linter|suite|confirm/i.test(text)) seen = facts.verified;
+		else if (/locate|find|explore|identify|root cause|inspect|follow|seed|read /i.test(text)) seen = facts.explored;
+		else if (/fix|implement|change|add|refactor|rename|move|update|edit|smallest|extract/i.test(text)) seen = facts.fixed;
+		return { text, seen };
+	});
+	const seenCount = planSteps.filter(p => p.seen).length;
+	const plan = { stated: todos.length > 0, todos, steps: planSteps, seenCount };
+	if (proposedPlan || todos.length) summary.push(`Planned its work: ${proposedPlan ? 'proposed a plan in plan mode' : `a todo list of ${plural(todos.length, 'step')}`}.`);
+	else if (inp.instruction) summary.push(`No plan was stated (no todo list, no plan mode)${planSteps.length ? `; the activity matches ${seenCount} of the brief's ${planSteps.length} planned steps` : ''}.`);
 	const notes: string[] = [];
 	if (!inp.git) notes.push('This folder is not a git repository, so file changes could not be verified against git. New files are inferred from Write calls to files that were never read; run `git init` and commit a baseline for exact results.');
 	if (!inp.git && shellWrites) notes.push(`${plural(shellWrites, 'shell command')} may have modified files (sed -i, tee, redirects or a patch script). Those edits are not in the file list. Run \`git init\` and commit a baseline to see them.`);
@@ -414,7 +468,7 @@ export function buildRunReport(inp: ReportInput): RunReport {
 		files: { outside: [...outsideMap.entries()].map(([path, edited]) => ({ path, edited })), read: reads, edited },
 		tests: { runs: testRuns, redToGreen, testFilesTouched, newTestFiles, final },
 		commands, governance, context,
-		git: inp.git ?? null, notes,
+		git: inp.git ?? null, notes, plan,
 	};
 }
 
@@ -426,6 +480,11 @@ export function reportToMarkdown(r: RunReport): string {
 	if (r.notes.length) L.push('> Notes', ...r.notes.map(x => `> - ${x}`), '');
 	if (r.task.instruction) { const i = r.task.instruction; L.push('## Task and brief', '', `Brief \`${i.id}\` (${i.intent}): ${i.request}`, ''); if (i.plan.length) L.push('Planned steps:', ...i.plan.map((p, k) => `${k + 1}. ${p}`), ''); if (i.verification.length) L.push('Planned verification:', ...i.verification.map(v => `- ${v}`), ''); }
 	else if (r.task.prompts.length) L.push('## Task', '', ...r.task.prompts.map(p => `- ${p.text}`), '');
+	if (r.plan.steps.length || r.plan.todos.length) {
+		L.push('## Plan', '');
+		if (r.plan.todos.length) L.push("Claude's own plan:", ...r.plan.todos.map((t, k) => `${k + 1}. ${t}`), '');
+		if (r.plan.steps.length) L.push(`Brief's planned steps (${r.plan.seenCount} of ${r.plan.steps.length} show up in the activity, inferred):`, ...r.plan.steps.map(p => `- [${p.seen ? 'x' : p.seen === false ? ' ' : '?'}] ${p.text}`), '');
+	}
 	L.push('## How it was done', '');
 	if (r.phases.some(p => p.calls)) L.push(`Phases (tool calls): ${r.phases.map(p => `${p.phase} ${p.calls}`).join(' → ')}`, '');
 	L.push(...r.steps.map(s => `- ${new Date(s.ts).toISOString().slice(11, 19)} ${s.label}`), '');

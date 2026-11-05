@@ -2,6 +2,7 @@
  * RIAF 2.0 host wiring (no VS Code dependency): Riaf2 (index + history + compiler) ↔ ToolGovernor
  * (token-opt) ↔ governor endpoint for Claude Code hooks. Used by the MCP server; testable in Node.
  */
+import { mcpApproval, mcpJsonStatus } from './claudeCodeStatus.js';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -34,6 +35,12 @@ const clip = (t: string, n: number): string => t.length <= n ? t : `${t.slice(0,
 export const runKeyRaw = (key: string): string => key.split('~')[0];
 
 /** Text Claude Code injects itself (background task results, reminders) rather than something the developer typed. */
+/** A short prompt that just points at the compiled instruction (`claude "$(cat .claude/riaf/instructions/current.md)"` typed or pasted into Claude Code). */
+export function isInstructionReference(prompt: string | undefined): boolean {
+	const t = (prompt ?? '').trim();
+	return /instructions\/current\.md/.test(t) && t.split(/\s+/).length < 12;
+}
+
 export function isSystemPrompt(prompt: string | undefined): boolean {
 	return /^\s*<(?:task-notification|system-reminder|local-command-std(?:out|err)|bash-(?:stdout|stderr))\b/.test(prompt ?? '');
 }
@@ -216,7 +223,7 @@ export class Riaf2Host {
 	}
 
 	/** Is Claude Code actually connected to this process? Used by the console to explain an empty Sessions page. */
-	hookHealth(): { governor: { listening: boolean; endpoint: string | null; fileEndpoint: string | null; ownedByThisProcess: boolean; otherPid: number | null }; hookScript: boolean; settingsPresent: boolean; events: Record<string, boolean>; missing: string[]; riafToolsRecorded: boolean; lastEventAt: number | null; eventsTotal: number } {
+	hookHealth(): { governor: { listening: boolean; endpoint: string | null; fileEndpoint: string | null; ownedByThisProcess: boolean; otherPid: number | null }; hookScript: boolean; settingsPresent: boolean; events: Record<string, boolean>; missing: string[]; riafToolsRecorded: boolean; mcp: { registered: boolean; enabled: boolean; allowed: boolean }; lastEventAt: number | null; eventsTotal: number } {
 		const required = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd'];
 		let settings: { hooks?: Record<string, { hooks?: { command?: string }[] }[]> } = {};
 		const settingsFile = join(this.root, '.claude', 'settings.json');
@@ -229,7 +236,7 @@ export class Riaf2Host {
 		return {
 			governor: { listening: this.server !== null, endpoint: this.endpoint, fileEndpoint, ownedByThisProcess: !!this.endpoint && this.endpoint === fileEndpoint, otherPid },
 			hookScript: existsSync(join(this.root, '.claude', 'hooks', 'riaf-govern.mjs')), settingsPresent: existsSync(settingsFile),
-			events, missing: required.filter(e => !events[e]), riafToolsRecorded: (settings.hooks?.PostToolUse ?? []).some(g => (g as { matcher?: string }).matcher?.includes('mcp__riaf__') && (g.hooks ?? []).some(h => typeof h.command === 'string' && h.command.includes('riaf-govern.mjs'))), lastEventAt: last?.ts ?? this.lastHookAt, eventsTotal: last?.n ?? 0,
+			events, missing: required.filter(e => !events[e]), mcp: { registered: mcpJsonStatus(this.root, '').present, ...(({ enabled, allowed }) => ({ enabled, allowed }))(mcpApproval(this.root)) }, riafToolsRecorded: (settings.hooks?.PostToolUse ?? []).some(g => (g as { matcher?: string }).matcher?.includes('mcp__riaf__') && (g.hooks ?? []).some(h => typeof h.command === 'string' && h.command.includes('riaf-govern.mjs'))), lastEventAt: last?.ts ?? this.lastHookAt, eventsTotal: last?.n ?? 0,
 		};
 	}
 
@@ -243,7 +250,7 @@ export class Riaf2Host {
 			const sid = p.session_id ?? 'default';
 			let detail: EventDetail | null = eventDetail(p, this.relative);
 			if (p.hook_event_name === 'SessionStart') detail = { ...(detail ?? {}), head: this.git(['rev-parse', 'HEAD']) || undefined, branch: this.git(['rev-parse', '--abbrev-ref', 'HEAD']) || undefined, dirty: this.dirtyFiles() };
-			if (p.hook_event_name === 'UserPromptSubmit') { if (!this.baselineRecorded(sid)) detail = { ...(detail ?? {}), head: this.git(['rev-parse', 'HEAD']) || undefined, branch: this.git(['rev-parse', '--abbrev-ref', 'HEAD']) || undefined, dirty: this.dirtyFiles() }; const li = this.lastInstruction.get(runKeyRaw(sid)); if (li) detail = { ...(detail ?? {}), instruction: li.id, intent: li.intent, request: li.request, plan: li.plan, verify: li.verify, pack: li.pack }; }
+			if (p.hook_event_name === 'UserPromptSubmit') { if (!this.baselineRecorded(sid)) detail = { ...(detail ?? {}), head: this.git(['rev-parse', 'HEAD']) || undefined, branch: this.git(['rev-parse', '--abbrev-ref', 'HEAD']) || undefined, dirty: this.dirtyFiles() }; const li = this.lastInstruction.get(runKeyRaw(sid)); if (li) detail = { ...(detail ?? {}), ...(isInstructionReference(p.prompt) ? { prompt: li.request, brief: li.id } : {}), instruction: li.id, intent: li.intent, request: li.request, plan: li.plan, verify: li.verify, pack: li.pack }; }
 			this.riaf.store.raw.run('INSERT INTO session_event(session_id, ts, event, tool, path, decision, reason, detail) VALUES (?,?,?,?,?,?,?,?)', [sid, Date.now(), p.hook_event_name ?? 'unknown', p.tool_name ?? null, path, decision, reason, detail ? JSON.stringify(detail) : null]);
 		} catch (e) { this.log(`recordEvent: ${String(e)}`); }
 	}
@@ -504,6 +511,17 @@ export class Riaf2Host {
 				const sid = runKeyRaw(p.session_id ?? 'default');
 				const text = prompt.trim();
 				// A pasted RIAF brief is already the instruction: keep its id and request, don't compile a second brief on top of it.
+				if (isInstructionReference(text)) {
+					// The developer pasted the "Send to Claude Code" command into Claude Code itself, so the shell never expanded it.
+					// Hand over the instruction directly instead of making Claude cat the file.
+					const cur = this.currentInstruction();
+					if (cur) {
+						const pack = this.riaf.currentPack();
+						this.lastInstruction.set(sid, { id: cur.instruction_id, intent: cur.intent.type, request: clip(cur.request, 300), plan: cur.plan.slice(0, 12), verify: cur.verification.slice(0, 12), pack: pack && pack.pack_id === cur.pack_id ? pack.items.map(i => i.path).slice(0, 40) : [] });
+						this.promptsSeen.add(sid);
+						return `RIAF: your prompt pointed at the compiled instruction, so here it is (${cur.instruction_id}, ${cur.intent.type}). Work from it; do not cat the file.\n\n${cur.markdown}`;
+					}
+				}
 				const brief = extractBriefRequest(text);
 				if (brief) {
 					const cur = this.currentInstruction();

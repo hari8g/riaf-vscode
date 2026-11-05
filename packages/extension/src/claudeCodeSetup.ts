@@ -67,7 +67,7 @@ export async function setProxyCredentials(ctx: vscode.ExtensionContext): Promise
 import type { ProxyBridgeManager } from './proxyBridgeManager.js';
 
 export { mcpJsonStatus } from './claudeCodeStatus.js';
-import { mcpJsonStatus } from './claudeCodeStatus.js';
+import { approveRiafMcp, mcpJsonStatus, writeMcpJson } from './claudeCodeStatus.js';
 
 export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: IndexManager, bridgeMgr?: ProxyBridgeManager): Promise<void> {
 	const folder = indexes.folderFor(vscode.window.activeTextEditor?.document.uri);
@@ -79,21 +79,8 @@ export async function setupClaudeCode(ctx: vscode.ExtensionContext, indexes: Ind
 	// 1. .mcp.json (project-scoped; Claude Code reads it automatically). It points at a small
 	//    launcher inside the repo that finds the newest installed RIAF at run time, so upgrading
 	//    the extension (whose folder name carries the version) never breaks Claude Code.
-	const launcher = join(root, '.riaf', 'riaf-mcp.mjs');
-	mkdirSync(join(root, '.riaf'), { recursive: true });
-	writeFileSync(launcher, readFileSync(join(ctx.extensionPath, 'plugin', 'riaf-mcp.mjs'), 'utf8'));
-	const mcpPath = join(root, '.mcp.json');
-	let mcp: { mcpServers?: Record<string, unknown> } = {};
-	if (existsSync(mcpPath)) { try { mcp = JSON.parse(readFileSync(mcpPath, 'utf8')); } catch { /* overwrite malformed */ } }
-	mcp.mcpServers = {
-		...(mcp.mcpServers ?? {}),
-		riaf: {
-			command: 'node',
-			args: [launcher, '--workspace', root, '--db', indexes.dbPathFor(folder)],
-			env: {},
-		},
-	};
-	writeFileSync(mcpPath, JSON.stringify(mcp, null, 2) + '\n');
+	const mcpPath = writeMcpJson(root, ctx.extensionPath, indexes.dbPathFor(folder)) ?? join(root, '.mcp.json');
+	approveRiafMcp(root);
 	// enabled integrations + base URLs for the MCP server (no credentials; those come from env vars or ~/.riaf/credentials.json)
 	writeIntegrationsConfig(root, readIntegrationsConfig());
 

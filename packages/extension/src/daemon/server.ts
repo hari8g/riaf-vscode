@@ -21,7 +21,7 @@ import { DEFAULT_POLICY_YAML, parsePolicy } from '@bosch-mps/token-opt';
 import type { Riaf2Host } from '../riaf2Host.js';
 import { ADAPTER_IDS, adapterSettings, allAdapters, getAdapter, isEnabled, missingCredentials, type AdapterEnv, type AdapterId, type IntegrationsConfig } from '../integrations/index.js';
 import { readAudit } from '../integrations/audit.js';
-import { mcpJsonStatus } from '../claudeCodeStatus.js';
+import { approveRiafMcp, mcpJsonStatus, writeMcpJson } from '../claudeCodeStatus.js';
 import { reportToMarkdown } from '../runReport.js';
 import { writeClaudeGovernance } from '@bosch-mps/riaf-engine';
 import { claudeLaunchCommand, writeInstructionForClaude } from '../instructionFlow.pure.js';
@@ -285,7 +285,14 @@ export class RiafDaemon {
 			case 'GET /claude-setup': return this.claudeSetupStatus();
 			case 'POST /claude-setup': { if (!this.d.setupClaudeCode) throw new HttpError(501, 'Claude Code setup runs from VS Code (RIAF: Set up Claude Code) or `riaf init --host claude`'); return { written: await this.d.setupClaudeCode() }; }
 			// Standalone-friendly: writes only the hook client, .claude/settings.json hooks, policy and the CLAUDE.md block (what `riaf init --host claude` writes).
-			case 'POST /hooks/install': return { written: writeClaudeGovernance(root).map(f => f.startsWith(root) ? f.slice(root.length + 1) : f) };
+			case 'POST /hooks/install': {
+				const written = writeClaudeGovernance(root).map(f => f.startsWith(root) ? f.slice(root.length + 1) : f);
+				// The hooks alone do not give Claude Code the riaf_* tools: register the MCP server and approve it too.
+				const dbPath = (this.d.host.riaf.index as unknown as { dbPath?: string }).dbPath ?? join(root, '.riaf', 'index.sqlite');
+				if (this.d.extensionPath && writeMcpJson(root, this.d.extensionPath, dbPath)) { written.push('.mcp.json', '.riaf/riaf-mcp.mjs'); }
+				if (existsSync(join(root, '.mcp.json'))) { approveRiafMcp(root); written.push('.claude/settings.local.json'); }
+				return { written };
+			}
 			case 'GET /hooks/health': return host.hookHealth();
 
 			/* sessions */

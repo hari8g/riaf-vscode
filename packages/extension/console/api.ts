@@ -49,12 +49,12 @@ export interface PackMeta { pack_id: string; head: string | null; budget: { max_
 export interface Instruction { instruction_id: string; pack_id: string; head: string | null; generated_at: string; request: string; intent: { type: string; confidence: number; source?: string }; route: { mode: string; tools: string; budget: number; stage: string; planGate: boolean }; plan: string[]; verification: string[]; findings: string[]; rules_sources: string[]; tokens: number; stable_hash: string; markdown: string }
 export interface AdapterView { id: string; displayName: string; enabled: boolean; settings: Record<string, unknown>; settingsSchema: Record<string, { type: string; description: string; default?: unknown; enum?: string[] }>; credentials: { key: string; label: string; secret: boolean; hint?: string; present: boolean }[]; tools: { name: string; kind: 'read' | 'write'; label: string; description: string }[] }
 export type RunStatus = 'running' | 'waiting' | 'finished' | 'stale';
-export type EventKind = 'start' | 'prompt' | 'read' | 'search' | 'edit' | 'command' | 'test' | 'served' | 'blocked' | 'briefing' | 'subagent' | 'turn-end' | 'end' | 'riaf' | 'other';
+export type EventKind = 'start' | 'prompt' | 'read' | 'search' | 'edit' | 'command' | 'test' | 'served' | 'blocked' | 'briefing' | 'subagent' | 'turn-end' | 'end' | 'riaf' | 'plan' | 'other';
 export interface TestRun { framework: string; passed: number; failed: number; skipped: number; errors: number; total: number; ok: boolean; durationMs?: number }
 export interface RunEvent { id: number; sessionId: string; ts: number; event: string; tool: string | null; path: string | null; decision: string | null; reason: string | null; kind: EventKind; label: string; detail: { prompt?: string; file?: string; added?: number; removed?: number; command?: string; failed?: boolean; tests?: TestRun; tail?: string } | null }
 export interface RunSummary { sessionId: string; status: RunStatus; startedAt: number; updatedAt: number; durationMs: number; title: string | null; turns: number; filesRead: number; filesEdited: number; commands: number; linesAdded: number; linesRemoved: number; tests: { runs: number; passed: number; failed: number; lastOk: boolean | null } }
 export interface SessionRow extends RunSummary { host: string; counters: Record<string, number | string | Record<string, unknown>> }
-export interface Health { governor: { listening: boolean; endpoint: string | null; fileEndpoint: string | null; ownedByThisProcess: boolean; otherPid: number | null }; hookScript: boolean; settingsPresent: boolean; events: Record<string, boolean>; missing: string[]; riafToolsRecorded: boolean; lastEventAt: number | null; eventsTotal: number }
+export interface Health { governor: { listening: boolean; endpoint: string | null; fileEndpoint: string | null; ownedByThisProcess: boolean; otherPid: number | null }; hookScript: boolean; settingsPresent: boolean; events: Record<string, boolean>; missing: string[]; riafToolsRecorded: boolean; mcp: { registered: boolean; enabled: boolean; allowed: boolean }; lastEventAt: number | null; eventsTotal: number }
 export interface RunReport {
 	sessionId: string; status: RunStatus; startedAt: number; endedAt: number; durationMs: number;
 	verdict: 'tests-passing' | 'tests-failing' | 'no-tests' | 'in-progress'; headline: string; summary: string[];
@@ -68,6 +68,7 @@ export interface RunReport {
 	context: { packItems: number; touched: number; touchedInPack: number; hitRate: number | null; missed: string[]; unused: string[] } | null;
 	git: { branch?: string; startHead?: string; endHead?: string; changed: { file: string; added: number; removed: number }[]; untracked: string[] } | null;
 	notes: string[];
+	plan: { stated: boolean; todos: string[]; steps: { text: string; seen: boolean | null }[]; seenCount: number };
 }
 export interface SessionEvent { id: number; ts: number; event: string; tool: string | null; path: string | null; decision: string | null; reason: string | null }
 

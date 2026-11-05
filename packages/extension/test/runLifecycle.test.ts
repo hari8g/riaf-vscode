@@ -158,6 +158,16 @@ describe('every prompt is a fresh run: earlier runs are switched off, saved and 
 		expect(rep.task.prompts).toHaveLength(1);
 		expect(rep.task.prompts[0].text).toMatch(/divide function/);
 	});
+
+	it('a prompt that only points at current.md is answered with the instruction itself', async () => {
+		const { instruction } = await host.instruct('add a modulo function to src/math.ts please');
+		const out = await hook(host, { session_id: 'R', hook_event_name: 'UserPromptSubmit', prompt: 'claude "$(cat .claude/riaf/instructions/current.md)"' }) as { hookSpecificOutput?: { additionalContext?: string } };
+		expect(out.hookSpecificOutput?.additionalContext).toContain(instruction.instruction_id);
+		expect(out.hookSpecificOutput?.additionalContext).toContain('# RIAF Prompt Instruction');
+		const rows = host.runSummaries().filter(r => r.sessionId.startsWith('R'));
+		expect(rows[0].title).toMatch(/modulo function/);
+		expect(host.runReport(rows[0].sessionId).task.instruction?.id).toBe(instruction.instruction_id);
+	});
 });
 
 import { spawn } from 'node:child_process';

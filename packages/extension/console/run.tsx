@@ -91,6 +91,7 @@ const ICON: Record<EventKind, string> = {
 	served: 'M13 3L5 13h6l-1 8 8-10h-6z',
 	blocked: 'M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6zM9 12l2 2 4-4',
 	briefing: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 11v5M12 8h.01',
+	plan: 'M9 4h10v16H5V8zM5 8h4V4M9 12h6M9 16h6',
 	riaf: 'M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5',
 	subagent: 'M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3 20c0-3 3-5 6-5s6 2 6 5M17 8a3 3 0 0 1 0 6M21 20c0-2-1-4-3-4.5',
 	'turn-end': 'M5 21V4h12l-2 4 2 4H5',
@@ -104,7 +105,7 @@ const STATUS_TEXT: Record<RunStatus, string> = { running: 'Running', waiting: 'D
 export const StatusPill = ({ status }: { status: RunStatus }) => <span className={`pill ${status}`}><i />{STATUS_TEXT[status]}</span>;
 
 const PHASES: { id: string; label: string; kinds: EventKind[] }[] = [
-	{ id: 'plan', label: 'Task received', kinds: ['prompt', 'briefing', 'start'] },
+	{ id: 'plan', label: 'Task received', kinds: ['prompt', 'briefing', 'start', 'plan'] },
 	{ id: 'explore', label: 'Exploring', kinds: ['read', 'search', 'served', 'blocked', 'riaf'] },
 	{ id: 'implement', label: 'Implementing', kinds: ['edit', 'command', 'subagent'] },
 	{ id: 'verify', label: 'Verifying', kinds: ['test'] },
@@ -209,6 +210,13 @@ export function RunReportView({ report: r, markdown, go }: { report: RunReport; 
 				<ul className="bul">{r.summary.map((s, i) => <li key={i}>{s}</li>)}</ul>
 				{r.task.instruction && <div className="small muted" style={{ marginTop: 8 }}>Worked from brief <code>{r.task.instruction.id}</code> ({r.task.instruction.intent}), which planned {r.task.instruction.plan.length} steps and {r.task.instruction.verification.length} verification checks.</div>}
 			</section>
+
+			{(r.plan.steps.length > 0 || r.plan.todos.length > 0) && <section className="panel">
+				<h3>Plan</h3>
+				{r.plan.todos.length > 0 ? <><div className="small muted">Claude's own plan</div><ol className="bul">{r.plan.todos.map((t, i) => <li key={i}>{t}</li>)}</ol></> : <p className="small muted">Claude did not write a plan of its own (no todo list, no plan mode).</p>}
+				{r.plan.steps.length > 0 && <><div className="small muted" style={{ marginTop: 8 }}>The brief's steps: {r.plan.seenCount} of {r.plan.steps.length} show up in the activity (inferred from what ran)</div>
+					<ul className="bul">{r.plan.steps.map((p, i) => <li key={i}><span style={{ color: p.seen ? 'var(--moss)' : p.seen === false ? 'var(--ember)' : 'var(--ink-3)' }}>{p.seen ? '✓' : p.seen === false ? '○' : '·'}</span> {p.text}</li>)}</ul></>}
+			</section>}
 
 			<section className="panel">
 				<h3>How it was built</h3>
@@ -328,6 +336,8 @@ export function HealthCheck({ health, onInstall, installing }: { health: Health;
 		{ ok: g.ownedByThisProcess || !g.fileEndpoint, text: g.otherPid ? `Hooks currently report to another RIAF process (pid ${g.otherPid}), not this console` : 'Hooks are pointed at this process', fix: 'Only one RIAF process can own .riaf/governor.json. Close the other (for example the VS Code extension) or use its console instead.' },
 		{ ok: health.hookScript, text: 'The hook client exists at .claude/hooks/riaf-govern.mjs', fix: 'Install the hooks.' },
 		{ ok: health.missing.length === 0, text: health.missing.length ? `Claude Code settings are missing hooks: ${health.missing.join(', ')}` : 'All hooks are registered in .claude/settings.json (including Stop, which marks a finished run)', fix: 'Install or update the hooks, then restart Claude Code.' },
+		{ ok: health.mcp.registered, text: health.mcp.registered ? 'The riaf MCP server is registered in .mcp.json' : 'The riaf MCP server is not registered for Claude Code, so riaf_lookup, riaf_search and the other index tools do not exist for it', fix: 'Click Install or update hooks: it now writes .mcp.json as well. Then restart Claude Code.' },
+		{ ok: health.mcp.enabled, text: health.mcp.enabled ? 'The riaf MCP server is approved for this project' : 'Claude Code has not been told to trust the riaf MCP server (it skips unapproved project servers)', fix: 'Install or update hooks writes the approval to .claude/settings.local.json. Or run /mcp inside Claude Code and enable riaf.' },
 		{ ok: health.riafToolsRecorded, text: health.riafToolsRecorded ? 'RIAF tool calls (riaf_lookup and friends) are recorded in the run' : 'RIAF tool calls are not recorded yet, so a run cannot show whether Claude used the index', fix: 'Install or update the hooks, then restart Claude Code.' },
 		{ ok: health.eventsTotal > 0, text: health.eventsTotal ? `Last hook event received ${ago(health.lastEventAt ?? 0)} (${health.eventsTotal} in total)` : 'No hook event has been received yet', fix: 'Start a Claude Code session in this repository after installing the hooks.' },
 	];

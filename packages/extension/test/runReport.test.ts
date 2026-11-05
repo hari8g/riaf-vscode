@@ -201,3 +201,38 @@ describe('shell exploration in reports', () => {
 		expect(r.summary.join(' ')).toMatch(/Explored 1 file \(1 through shell reads\)/);
 	});
 });
+
+describe('exploring and planning through Claude Code tools', () => {
+	const rel = (p: string) => p;
+	it('recognises exploration-only shell commands', async () => {
+		const { isExploreCommand } = await import('../src/runReport.js');
+		for (const c of ['sed -n 1,40p a.py', 'cat a.py | head -20', 'grep -rn foo src | wc -l', 'cd app && ls -la', 'git log --oneline -5', 'ls ~/x 2>/dev/null']) expect(isExploreCommand(c), c).toBe(true);
+		for (const c of ['pytest -q', 'sed -i s/a/b/ a.py', 'cat a > b.py', 'python run.py', 'git commit -m x', 'cat $(ls)', 'npm install']) expect(isExploreCommand(c), c).toBe(false);
+	});
+	it('a Bash exploration becomes a search event that names the files it read', () => {
+		const d = eventDetail({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'sed -n 1,40p api/main.py; cat pipeline/a.py' }, tool_response: { stdout: 'x' } }, rel);
+		expect(d).toMatchObject({ explore: true, reads: ['api/main.py', 'pipeline/a.py'] });
+		expect(classifyEvent({ event: 'PostToolUse', tool: 'Bash', path: null, decision: 'allow', reason: null, detail: d })).toMatchObject({ kind: 'search' });
+		const s = summarizeRun('s', [{ id: 1, sessionId: 's', ts: 1, event: 'PostToolUse', tool: 'Bash', path: null, decision: 'allow', reason: null, detail: d, kind: 'search', label: '' }], 5);
+		expect(s.filesRead).toBe(2);
+	});
+	it('summaries leave out files outside the repository', () => {
+		const e = (file: string): RunEvent => ({ id: 1, sessionId: 's', ts: 1, event: 'PostToolUse', tool: 'Write', path: file, decision: 'allow', reason: null, detail: { file, added: 5, removed: 0 }, kind: 'edit', label: '' });
+		const s = summarizeRun('s', [e('src/a.py'), e('../../../private/tmp/x/drive.py')], 5);
+		expect(s).toMatchObject({ filesEdited: 1, linesAdded: 5 });
+	});
+	it('TodoWrite and ExitPlanMode are the plan, and the report says whether a plan was stated', () => {
+		const td = eventDetail({ hook_event_name: 'PostToolUse', tool_name: 'TodoWrite', tool_input: { todos: [{ content: 'Reproduce the bug' }, { content: 'Fix it' }] } }, rel);
+		expect(td?.todos).toEqual(['Reproduce the bug', 'Fix it']);
+		id = 0;
+		const inst = { id: 'i', request: 'x', intent: 'bugfix', plan: ['Reproduce: find or write a failing test', 'Locate the root cause', 'Fix with the smallest change', 'Run the covering tests'], verification: [], packPaths: [] };
+		const none = buildRunReport({ sessionId: 's', events: [ev('UserPromptSubmit', { detail: { prompt: 'x' } }), ev('Stop')], metrics: {}, now: 9e4, git: { changed: [], untracked: [] }, instruction: inst });
+		expect(none.plan.stated).toBe(false); expect(none.summary.join(' ')).toMatch(/No plan was stated/);
+		expect(none.plan.steps.every(p => p.seen === false)).toBe(true);
+		const tw = ev('PostToolUse', { tool: 'TodoWrite', detail: td });
+		const full = buildRunReport({ sessionId: 's', events: [ev('UserPromptSubmit', { detail: { prompt: 'x' } }), tw, ev('PostToolUse', { tool: 'Edit', path: 'src/a.py', detail: { file: 'src/a.py', added: 1, removed: 0 } }), T('pytest -q', { passed: 2 }), ev('Stop')], metrics: {}, now: 9e4, git: { changed: [], untracked: [] }, instruction: inst });
+		expect(full.plan.stated).toBe(true); expect(full.summary.join(' ')).toMatch(/todo list of 2 steps/);
+		expect(full.plan.steps.map(p => p.seen)).toEqual([false, false, true, true]);
+		expect(reportToMarkdown(full)).toMatch(/## Plan[\s\S]*Reproduce the bug/);
+	});
+});
