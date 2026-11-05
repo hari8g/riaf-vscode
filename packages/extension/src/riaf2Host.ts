@@ -31,6 +31,11 @@ export interface Riaf2HostOptions {
 
 /** A run is one prompt: `<claude session id>~<base36 time>`. Hooks of the same prompt share it; the next prompt gets a new one. */
 export const runKeyRaw = (key: string): string => key.split('~')[0];
+
+/** Text Claude Code injects itself (background task results, reminders) rather than something the developer typed. */
+export function isSystemPrompt(prompt: string | undefined): boolean {
+	return /^\s*<(?:task-notification|system-reminder|local-command-std(?:out|err)|bash-(?:stdout|stderr))\b/.test(prompt ?? '');
+}
 /** Runs idle longer than this are archived and deleted when the daemon starts or a prompt begins. */
 export const RUN_MAX_IDLE_MS = 12 * 3600_000;
 const MAX_ARCHIVED_REPORTS = 25;
@@ -378,8 +383,15 @@ export class Riaf2Host {
 	/** Claude Code hook entry point (called by the governor endpoint). */
 	async handleHook(payload: ClaudeHookPayload): Promise<unknown> {
 		const raw = payload.session_id ?? 'default';
-		const isPrompt = payload.hook_event_name === 'UserPromptSubmit';
 		this.lastHookAt = Date.now();
+		// Claude Code feeds background-command results and reminders back through UserPromptSubmit. They are not a task from the developer:
+		// they belong to the run in progress, so they neither open a new run nor get a brief compiled for them.
+		if (payload.hook_event_name === 'UserPromptSubmit' && isSystemPrompt(payload.prompt)) {
+			const key = this.runFor(raw, false);
+			if (!this.switchedOff.has(raw)) this.recordEvent({ ...payload, session_id: key, hook_event_name: 'SystemNotice' }, undefined);
+			return undefined;
+		}
+		const isPrompt = payload.hook_event_name === 'UserPromptSubmit';
 		if (isPrompt) this.switchedOff.delete(raw);
 		const key = this.runFor(raw, isPrompt);
 		const p: ClaudeHookPayload = key === raw ? payload : { ...payload, session_id: key };

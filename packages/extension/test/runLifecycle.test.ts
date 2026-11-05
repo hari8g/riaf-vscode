@@ -146,6 +146,18 @@ describe('every prompt is a fresh run: earlier runs are switched off, saved and 
 		expect(rep.task.instruction?.id).toBe(instruction.instruction_id);
 		expect(rep.task.instruction?.plan.length).toBeGreaterThan(0);
 	});
+
+	it('a background-task notification joins the running run instead of replacing it', async () => {
+		await hook(host, { session_id: 'N', hook_event_name: 'UserPromptSubmit', prompt: 'add a divide function to src/math.ts please' });
+		await edit(host, 'N');
+		const before = ids(host);
+		await hook(host, { session_id: 'N', hook_event_name: 'UserPromptSubmit', prompt: '<task-notification>\n<task-id>x1</task-id>\n<status>failed</status>\n</task-notification>' });
+		expect(ids(host)).toEqual(before);
+		const rep = host.runReport(before[0]);
+		expect(rep.files.edited.map(f => f.path)).toEqual(['src/math.ts']);
+		expect(rep.task.prompts).toHaveLength(1);
+		expect(rep.task.prompts[0].text).toMatch(/divide function/);
+	});
 });
 
 import { spawn } from 'node:child_process';
