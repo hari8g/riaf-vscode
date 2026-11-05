@@ -11,8 +11,6 @@
  */
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { join, resolve } from 'node:path';
 import { buildInstruction, formatEvalReport, formatRouteLine, parseBudget, Riaf2, routeIntent, runEval, saveInstruction, RENDER_TARGETS, type RenderTarget } from '@bosch-mps/riaf-core';
 import { writeClaudeGovernance } from './claudeInit.js';
@@ -137,7 +135,8 @@ export async function executeRiaf2(cmd: string, argv: string[], io: { log: (s: s
 
 /** Locate the daemon bundle: explicit flag, RIAF_DAEMON, or the extension's dist next to this package. */
 export function findDaemon(explicit?: string): string | undefined {
-	const here = dirname(fileURLToPath(import.meta.url));
-	const candidates = [explicit, process.env.RIAF_DAEMON, join(here, '..', '..', 'extension', 'dist', 'daemon.mjs'), join(here, '..', 'dist', 'daemon.mjs'), join(here, 'daemon.mjs')].filter((p): p is string => !!p);
+	// Resolved relative to the running bundle / dist dir (works in ESM and CJS bundles, and in the VS Code extension host).
+	const here = typeof __dirname === 'string' ? __dirname : process.cwd();
+	const candidates = [explicit, process.env.RIAF_DAEMON, join(here, '..', '..', 'extension', 'dist', 'daemon.mjs'), join(here, '..', 'dist', 'daemon.mjs'), join(here, 'daemon.mjs'), join(process.cwd(), 'packages', 'extension', 'dist', 'daemon.mjs')].filter((p): p is string => !!p);
 	return candidates.find(p => existsSync(p));
 }

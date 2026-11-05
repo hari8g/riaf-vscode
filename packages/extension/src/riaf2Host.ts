@@ -206,9 +206,9 @@ export class Riaf2Host {
 	}
 
 	/** Route → compile (budget / stage / scope from the route) → Prompt Instruction, saved under .claude/riaf/instructions. */
-	async instruct(request: string, opts: { route?: IntentRoute; command?: string; activeFile?: string; selection?: string; budget?: number; findings?: string[]; host?: BuildInstructionOptions['host']; fresh?: boolean } = {}): Promise<{ route: IntentRoute; pack: ContextPack; instruction: PromptInstruction; path: string }> {
+	async instruct(request: string, opts: { route?: IntentRoute; command?: string; activeFile?: string; selection?: string; budget?: number; findings?: string[]; host?: BuildInstructionOptions['host']; fresh?: boolean; pinned?: string[]; excluded?: string[]; scope?: string } = {}): Promise<{ route: IntentRoute; pack: ContextPack; instruction: PromptInstruction; path: string }> {
 		const route = opts.route ?? await this.route(request, { command: opts.command, activeFile: opts.activeFile, selection: opts.selection });
-		const { pack } = await this.compile(request, { budget: opts.budget ?? route.budget, stage: route.stage, scope: route.scope, activeFile: opts.activeFile, selection: opts.selection, fresh: opts.fresh });
+		const { pack } = await this.compile(request, { budget: opts.budget ?? route.budget, stage: route.stage, scope: opts.scope ?? route.scope, activeFile: opts.activeFile, selection: opts.selection, fresh: opts.fresh, pinned: opts.pinned, excluded: opts.excluded });
 		const instruction = buildInstruction(pack, { route, root: this.root, activeFile: opts.activeFile, policy: this.policy, findings: opts.findings, host: opts.host ?? 'claude' });
 		const saved = saveInstruction(this.root, instruction);
 		this.log(`instruction ${instruction.instruction_id}: ${formatRouteLine(route, { items: pack.items.length, tokens: pack.budget.used_tokens })}`);

@@ -234,7 +234,7 @@ half only, so it caches), the `riaf_instruction` / `riaf_classify` MCP tools and
 
 **RIAF Console** (`RIAF: Open Console`, or `riaf serve --open` from a terminal) is a local web UI over
 the same index: *Overview* (index, history, tokens saved, Claude Code setup state), *Repository* (file
-tree with hot-spot / test / importer chips, outline, neighbourhood, history, search), *Pack Studio*
+tree with hot-spot / test / importer chips, outline, neighbourhood, history, search), *Studio*
 (live classification while you type, compile, items with their *why*, render for claude / copilot /
 openai / gemini / agents-md, Send to Claude Code, compare earlier instructions), *Adapters* (Jira,
 Confluence, GitLab, knowledge stores: settings, credentials, health test, tools, audit log),

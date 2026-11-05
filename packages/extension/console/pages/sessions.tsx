@@ -1,55 +1,63 @@
-import React, { useEffect, useState } from 'react';
-import { Button, Note, Section, StatCard } from '../../webview/ui.js';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ago, api, fmtK, type SessionEvent, type SessionRow } from '../api.js';
+import { Btn, Chip, Empty } from '../kit.js';
 
 const n = (v: unknown) => Number(v) || 0;
+const cls = (e: SessionEvent) => e.decision === 'deny' ? 'deny' : e.decision === 'context' ? 'context' : e.event === 'PostToolUse' ? 'exec' : 'allow';
 
 export function Sessions() {
 	const [rows, setRows] = useState<SessionRow[]>([]);
-	const [statusText, setStatusText] = useState('');
 	const [sel, setSel] = useState<string | null>(null);
 	const [events, setEvents] = useState<SessionEvent[]>([]);
-	const [error, setError] = useState<string | null>(null);
-	const load = async () => { try { const r = await api.get<{ sessions: SessionRow[]; status: string }>('/sessions'); setRows(r.sessions); setStatusText(r.status); } catch (e) { setError((e as Error).message); } };
+	const [filter, setFilter] = useState<'all' | 'deny' | 'exec' | 'context'>('all');
+	const load = async () => { try { const r = await api.get<{ sessions: SessionRow[] }>('/sessions'); setRows(r.sessions); } catch { /* shown by overview */ } };
 	useEffect(() => { void load(); const t = setInterval(() => void load(), 10_000); return () => clearInterval(t); }, []);
-	useEffect(() => { if (!sel) return; api.get<{ events: SessionEvent[] }>(`/session?id=${encodeURIComponent(sel)}`).then(r => setEvents(r.events)).catch(e => setError((e as Error).message)); }, [sel]);
+	useEffect(() => { if (!sel) return; api.get<{ events: SessionEvent[] }>(`/session?id=${encodeURIComponent(sel)}&limit=800`).then(r => setEvents([...r.events].reverse())).catch(() => setEvents([])); }, [sel]);
 	const sum = (k: string) => rows.reduce((s, r) => s + n(r.counters[k]), 0);
 	const proposed = sum('proposed'), served = sum('served'), blocked = sum('blocked');
 	const selected = rows.find(r => r.sessionId === sel);
+	const shown = useMemo(() => events.filter(e => filter === 'all' || cls(e) === filter), [events, filter]);
+	const counts = useMemo(() => ({ deny: events.filter(e => cls(e) === 'deny').length, exec: events.filter(e => cls(e) === 'exec').length, context: events.filter(e => cls(e) === 'context').length }), [events]);
+
 	return (
-		<Section id="sessions" title="Sessions" desc="Every governed agent session (Claude Code via hooks, @riaf, the console) with the governor's decision per tool call: served from the index, blocked as redundant, prefetched, or executed.">
-			{error && <Note kind="warn">{error}</Note>}
-			<div className="rowflex">
-				<StatCard label="Sessions" value={String(rows.length)} />
-				<StatCard label="Calls proposed" value={fmtK(proposed)} />
-				<StatCard label="Served from index" value={fmtK(served)} sub={proposed ? `${Math.round(served / proposed * 100)}%` : ''} />
-				<StatCard label="Blocked (redundant / loop)" value={fmtK(blocked)} sub={proposed ? `${Math.round(blocked / proposed * 100)}%` : ''} />
-				<StatCard label="Tokens served vs executed" value={`${fmtK(sum('tokensServed'))} / ${fmtK(sum('tokensExecuted'))}`} />
+		<>
+			<h1>Sessions</h1>
+			<p className="lead">Every governed session: what the agent asked to read or run, and whether the governor answered from the index, blocked a repeat, or let it through. Green is a call that never had to happen.</p>
+			<div className="grid3" style={{ marginBottom: 14 }}>
+				<div className="stat"><div className="v">{rows.length}</div><div className="l">sessions recorded</div></div>
+				<div className="stat"><div className="v">{proposed ? Math.round((served + blocked) / proposed * 100) : 0}%</div><div className="l">of {fmtK(proposed)} proposed calls avoided: {fmtK(served)} served from the index, {fmtK(blocked)} blocked</div></div>
+				<div className="stat"><div className="v">{fmtK(sum('tokensServed'))}</div><div className="l">tokens served instead of executed ({fmtK(sum('tokensExecuted'))} executed)</div></div>
 			</div>
-			<div className="grid2">
-				<div className="panel" style={{ overflow: 'auto', maxHeight: '65vh' }}>
-					<table><thead><tr><th>session</th><th>host</th><th>last activity</th><th>proposed</th><th>served</th><th>blocked</th><th>saved</th></tr></thead><tbody>
-						{rows.map(r => <tr key={r.sessionId} className="clickable" style={sel === r.sessionId ? { background: 'var(--vscode-list-activeSelectionBackground)' } : undefined} onClick={() => setSel(r.sessionId)}>
-							<td className="mono">{r.sessionId.slice(0, 12)}</td><td>{r.host}</td><td>{ago(r.updatedAt)}</td><td>{n(r.counters.proposed)}</td><td>{n(r.counters.served)}</td><td>{n(r.counters.blocked)}</td><td>{fmtK(n(r.counters.tokensServed))}</td>
-						</tr>)}
-						{!rows.length && <tr><td colSpan={7} className="muted">No governed sessions yet. Start Claude Code in this repo (with the RIAF hooks installed) or ask @riaf something.</td></tr>}
-					</tbody></table>
-				</div>
-				<div className="panel stack" style={{ minWidth: 0 }}>
-					{!selected && <div className="muted">Select a session to see its tool-call timeline.</div>}
-					{selected && <>
-						<div className="rowflex"><span style={{ fontWeight: 600 }} className="mono">{selected.sessionId}</span><span className="chip">{selected.host}</span><span className="muted" style={{ fontSize: 11 }}>started {ago(selected.startedAt)} · phase {String(selected.counters.phase ?? '?')}</span><span style={{ flex: 1 }} /><Button small onClick={() => setSel(null)}>close</Button></div>
-						<div className="rowflex" style={{ fontSize: 11 }}>{Object.entries(selected.counters).filter(([k, v]) => typeof v === 'number' && !/^(startedAt|updatedAt)$/.test(k)).map(([k, v]) => <span key={k} className="chip">{k} {fmtK(n(v))}</span>)}</div>
-						<div style={{ maxHeight: '55vh', overflow: 'auto' }}>
-							<table><thead><tr><th>when</th><th>event</th><th>tool</th><th>target</th><th>decision</th></tr></thead><tbody>
-								{events.map(e => <tr key={e.id}><td>{new Date(e.ts).toLocaleTimeString()}</td><td>{e.event}</td><td className="mono">{e.tool ?? ''}</td><td className="mono" style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.path ?? ''}>{e.path ?? ''}</td><td><span className={`chip ${e.decision === 'deny' ? 'hot' : e.decision === 'context' ? 'accent' : ''}`} title={e.reason ?? ''}>{e.decision ?? ''}</span></td></tr>)}
-								{!events.length && <tr><td colSpan={5} className="muted">No per-call events recorded for this session (older sessions predate the event log).</td></tr>}
-							</tbody></table>
+			{!rows.length ? <Empty title="No sessions yet">Start Claude Code in this repository with the RIAF hooks installed, or ask @riaf in VS Code; sessions appear here as they run.</Empty> : (
+				<div className="grid2" style={{ gridTemplateColumns: selected ? '1fr 1.3fr' : '1fr' }}>
+					<div className="panel" style={{ maxHeight: '70vh', overflow: 'auto', padding: 0 }}>
+						<table className="data"><thead><tr><th>Session</th><th>Client</th><th>Last activity</th><th>Decisions</th><th>Saved</th></tr></thead><tbody>
+							{rows.map(r => { const p = n(r.counters.proposed), s = n(r.counters.served), b = n(r.counters.blocked); return (
+								<tr key={r.sessionId} className={`clickable ${sel === r.sessionId ? 'sel' : ''}`} onClick={() => setSel(r.sessionId === sel ? null : r.sessionId)}>
+									<td className="mono">{r.sessionId.slice(0, 10)}</td><td>{r.host}</td><td>{ago(r.updatedAt)}</td>
+									<td style={{ minWidth: 140 }}><div className="breakdown" title={`${s} served, ${b} blocked, ${Math.max(0, p - s - b)} executed`}>{p > 0 && <><i style={{ width: `${s / p * 100}%`, background: 'var(--moss)' }} /><i style={{ width: `${b / p * 100}%`, background: 'var(--teal)' }} /><i style={{ width: `${Math.max(0, p - s - b) / p * 100}%`, background: 'var(--ember)' }} /></>}</div><div className="tiny muted">{p} calls</div></td>
+									<td>{fmtK(n(r.counters.tokensServed))}</td>
+								</tr>); })}
+						</tbody></table>
+					</div>
+					{selected && <div className="panel stack" style={{ minWidth: 0 }}>
+						<div className="row" style={{ justifyContent: 'space-between' }}><div><h2 className="mono" style={{ fontSize: 14 }}>{selected.sessionId}</h2><div className="small muted">{selected.host}, started {ago(selected.startedAt)}, phase {String(selected.counters.phase ?? 'unknown')}</div></div><Btn sm kind="ghost" onClick={() => setSel(null)}>Close</Btn></div>
+						<div className="tl" role="img" aria-label="timeline of governor decisions">{events.map(e => <i key={e.id} className={cls(e)} title={`${new Date(e.ts).toLocaleTimeString()} ${e.event} ${e.tool ?? ''} ${e.path ?? ''} → ${e.decision ?? ''}`} />)}</div>
+						<div className="row small">
+							<Chip tone={filter === 'all' ? 'teal' : undefined} onClick={() => setFilter('all')}>all {events.length}</Chip>
+							<Chip tone={filter === 'deny' ? 'teal' : undefined} onClick={() => setFilter('deny')}><span className="dot ok" /> served or blocked {counts.deny}</Chip>
+							<Chip tone={filter === 'exec' ? 'teal' : undefined} onClick={() => setFilter('exec')}><span className="dot warn" /> executed {counts.exec}</Chip>
+							<Chip tone={filter === 'context' ? 'teal' : undefined} onClick={() => setFilter('context')}>briefings {counts.context}</Chip>
 						</div>
-					</>}
+						<div className="row">{Object.entries(selected.counters).filter(([k, v]) => typeof v === 'number' && !/^(startedAt|updatedAt)$/.test(k)).map(([k, v]) => <Chip key={k}>{k} {fmtK(n(v))}</Chip>)}</div>
+						<div style={{ maxHeight: '52vh', overflow: 'auto' }}>
+							{!events.length ? <p className="small muted">No per-call events for this session (it predates the event log).</p> : <table className="data"><thead><tr><th>Time</th><th>Event</th><th>Tool</th><th>Target</th><th>Decision</th></tr></thead><tbody>
+								{shown.map(e => <tr key={e.id}><td className="tiny">{new Date(e.ts).toLocaleTimeString()}</td><td>{e.event}</td><td className="mono">{e.tool ?? ''}</td><td className="mono" style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.path ?? ''}>{e.path ?? ''}</td><td><Chip tone={cls(e) === 'deny' ? 'moss' : cls(e) === 'context' ? 'teal' : cls(e) === 'exec' ? 'ember' : undefined} title={e.reason ?? ''}>{e.decision === 'deny' ? 'served' : e.decision ?? 'allowed'}</Chip></td></tr>)}
+							</tbody></table>}
+						</div>
+					</div>}
 				</div>
-			</div>
-			{statusText && <pre className="muted" style={{ fontSize: 11 }}>{statusText}</pre>}
-		</Section>
+			)}
+		</>
 	);
 }

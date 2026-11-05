@@ -188,6 +188,28 @@ export class RiafDaemon {
 				const g = await riaf.index.getGraph();
 				return { nodes: g.nodes.slice(0, 2_000), edges: (g as { edges?: unknown[] }).edges?.slice(0, 6_000) ?? [] };
 			}
+			case 'GET /repo/neighborhood': {
+				// Two-hop neighbourhood of a file as a small graph for the console (imports, importers, tests, callers, co-change).
+				const path = q('path'); if (!path) throw new HttpError(400, 'path required');
+				const rel = host.relative(path);
+				const nodes = new Map<string, { id: string; kind: 'focus' | 'import' | 'importer' | 'test' | 'caller' | 'cochange'; hop: number }>();
+				const edges: { from: string; to: string; kind: string; weight?: number }[] = [];
+				const add = (id: string, kind: 'focus' | 'import' | 'importer' | 'test' | 'caller' | 'cochange', hop: number) => { if (!nodes.has(id)) nodes.set(id, { id, kind, hop }); };
+				add(rel, 'focus', 0);
+				const expand = async (p: string, hop: number) => {
+					const e = await riaf.expand(p, 1);
+					for (const i of e.imports.slice(0, 8)) { add(i, 'import', hop); edges.push({ from: p, to: i, kind: 'imports' }); }
+					for (const i of e.importedBy.slice(0, 8)) { add(i, 'importer', hop); edges.push({ from: i, to: p, kind: 'imports' }); }
+					for (const t of e.tests.slice(0, 4)) { add(t, 'test', hop); edges.push({ from: t, to: p, kind: 'tests' }); }
+					for (const c of e.callers.slice(0, 6)) { const f = c.split(' ')[0].split('#')[0]; if (f !== p) { add(f, 'caller', hop); edges.push({ from: f, to: p, kind: 'calls' }); } }
+					for (const c of e.coChanges.slice(0, 6)) { add(c.path, 'cochange', hop); edges.push({ from: p, to: c.path, kind: 'co-change', weight: c.confidence }); }
+				};
+				await expand(rel, 1);
+				const firstHop = [...nodes.values()].filter(n => n.hop === 1 && n.kind !== 'cochange').slice(0, 5);
+				for (const n of firstHop) await expand(n.id, 2).catch(() => undefined);
+				const seen = new Set<string>();
+				return { focus: rel, nodes: [...nodes.values()].slice(0, 60), edges: edges.filter(e => { const k = `${e.from}>${e.to}:${e.kind}`; if (seen.has(k) || !nodes.has(e.from) || !nodes.has(e.to)) return false; seen.add(k); return true; }).slice(0, 160) };
+			}
 			case 'GET /repo/report': return { markdown: await riaf.index.getIndexingReport() };
 			case 'GET /repo/hotspots': return { hotspots: riaf.history?.hotspots(20, q('scope') ?? '') ?? [] };
 
@@ -200,7 +222,8 @@ export class RiafDaemon {
 			case 'POST /instruction': {
 				const request = str('request'); if (!request) throw new HttpError(400, 'request required');
 				const findings = Array.isArray(body.findings) ? (body.findings as unknown[]).map(String) : undefined;
-				const { route, pack, instruction, path } = await host.instruct(request, { activeFile: str('activeFile'), command: str('command'), budget: num('budget'), findings, fresh: body.fresh === true, host: (str('host') as 'claude' | 'copilot' | 'generic' | undefined) ?? 'claude' });
+				const list = (k: string) => Array.isArray(body[k]) ? (body[k] as unknown[]).map(String).filter(Boolean) : undefined;
+				const { route, pack, instruction, path } = await host.instruct(request, { activeFile: str('activeFile'), command: str('command'), budget: num('budget'), findings, fresh: body.fresh === true, host: (str('host') as 'claude' | 'copilot' | 'generic' | undefined) ?? 'claude', pinned: list('pinned'), excluded: list('excluded'), scope: str('scope') });
 				return { route: { ...route, line: formatRouteLine(route, { items: pack.items.length, tokens: pack.budget.used_tokens }) }, pack: packMeta(pack), instruction, path };
 			}
 			case 'GET /instruction/current': return { instruction: host.currentInstruction(), pack: riaf.currentPack() ? packMeta(riaf.currentPack()!) : null };

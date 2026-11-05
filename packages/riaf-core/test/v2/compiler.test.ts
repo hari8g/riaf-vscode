@@ -158,3 +158,26 @@ describe('Pack compiler on the sample repository with history', () => {
 		expect(formatEvalReport(report)).toMatch(/Pack recall/);
 	}, 30_000);
 });
+
+describe('Pack compiler: developer pin / exclude', () => {
+	let dir: string; let riaf: Riaf2;
+	beforeAll(async () => {
+		dir = mkdtempSync(join(tmpdir(), 'riaf-pin-'));
+		const { repo } = makeHistoryRepo(dir);
+		riaf = await Riaf2.open({ workspaceRoot: repo, dbPath: join(dir, 'index.sqlite'), persistDebounceMs: 20, history: { now: () => NOW } });
+		await riaf.indexRepo();
+	}, 60_000);
+	afterAll(async () => { await riaf.close(); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); });
+
+	it('pinned paths come first and excluded paths disappear; the override is part of the cache key', async () => {
+		const base = await riaf.compile('Fix capturePayment in OrderService', { budget: 8_000 });
+		expect(base.items[0].path).toBe('src/orderService.ts');
+		const pinned = await riaf.compile('Fix capturePayment in OrderService', { budget: 8_000, pinned: ['src/logger.ts'], excluded: ['src/orderService.test.ts'] });
+		expect(pinned.pack_id).not.toBe(base.pack_id);
+		expect(pinned.items[0].path).toBe('src/logger.ts');
+		expect(pinned.items[0].why).toMatch(/pinned by the developer/);
+		expect(pinned.items.some(i => i.path === 'src/orderService.test.ts')).toBe(false);
+		const again = await riaf.compile('Fix capturePayment in OrderService', { budget: 8_000, pinned: ['src/logger.ts'], excluded: ['src/orderService.test.ts'] });
+		expect(again.pack_id).toBe(pinned.pack_id); // cached under the same override key
+	});
+});
