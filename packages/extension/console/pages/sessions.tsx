@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ago, api, clock, fmtDur, fmtK, type Health, type SessionRow } from '../api.js';
-import { Btn, Chip, Empty, useToast } from '../kit.js';
+import { Btn, Chip, Drawer, Empty, useToast } from '../kit.js';
+import { mdToHtml } from '../md.js';
 import { HealthCheck, LiveFeed, PhaseRail, RunReportView, RunStats, StatusPill, useLiveRun, useRunReport } from '../run.js';
 
 const n = (v: unknown) => Number(v) || 0;
@@ -44,6 +45,11 @@ export function Sessions() {
 		return () => { stop = true; clearTimeout(timer); document.removeEventListener('visibilitychange', wake); };
 	}, []);
 
+	// Normally there is one run: the current prompt. Open it by default; follow it when a new prompt replaces it.
+	useEffect(() => { if (loaded && rows.length && !rows.some(r => r.sessionId === sel)) { setSel(rows[0].sessionId); setTab('live'); } }, [loaded, rows, sel]);
+	const [saved, setSaved] = useState<{ name: string; ts: number; bytes: number }[]>([]);
+	const [viewing, setViewing] = useState<{ name: string; markdown: string } | null>(null);
+	useEffect(() => { api.get<{ reports: typeof saved }>('/reports').then(r => setSaved(r.reports)).catch(() => undefined); }, [rows.length, rows[0]?.sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 	const selected = rows.find(r => r.sessionId === sel) ?? null;
 	const live = useLiveRun(sel, !!sel);
 	const { report, markdown, busy } = useRunReport(sel, live.events.length, tab === 'report' && !!sel);
@@ -66,7 +72,7 @@ export function Sessions() {
 	const by = (metrics.byPhase ?? {}) as Record<string, { calls?: number; tokens?: number }>;
 	const sb = (metrics.servedBy ?? {}) as Record<string, number>;
 	const tiles = useMemo(() => ([
-		{ v: String(rows.length), l: running ? `sessions recorded, ${running} running now` : 'sessions recorded' },
+		{ v: running ? 'Live' : rows.length ? 'Done' : 'Idle', l: running ? 'Claude Code is working on the current prompt' : rows.length ? 'the current run has finished' : 'waiting for a prompt' },
 		{ v: `${proposed ? Math.round((served + blocked) / proposed * 100) : 0}%`, l: `of ${fmtK(proposed)} proposed calls avoided (${fmtK(served)} served from the index, ${fmtK(blocked)} blocked)` },
 		{ v: fmtK(sum('tokensServed')), l: `tokens served instead of executed (${fmtK(sum('tokensExecuted'))} executed)` },
 		{ v: withTests.length ? `${green}/${withTests.length}` : '—', l: `runs ending on green tests · ${edited} files edited in total` },
@@ -75,7 +81,7 @@ export function Sessions() {
 	return (
 		<>
 			<div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-				<div><h1>Sessions</h1><p className="lead">Every Claude Code session in this repository: what it did, whether the tests passed, and how many tool calls RIAF kept from running. It updates by itself.</p></div>
+				<div><div className="eyebrow">Sessions</div><h1>Current run</h1><p className="lead">The live run for your latest prompt: what Claude Code is doing, whether the tests passed, and how many tool calls RIAF kept from running. Each new prompt starts a clean run and clears the previous one; its report is saved first. This page updates by itself.</p></div>
 				<div className="row"><span className="tiny muted live-tick"><i className={running ? 'on' : ''} />{updated ? `updated ${ago(updated)}` : 'connecting'}</span><Btn sm kind="ghost" onClick={() => setShowHealth(h => !h)}>{unhealthy ? '⚠ Connection' : 'Connection'}</Btn></div>
 			</div>
 
@@ -86,7 +92,7 @@ export function Sessions() {
 
 			{!loaded ? <p className="muted">Loading…</p> : !rows.length ? (
 				<>
-					{!health || !(showHealth || unhealthy) ? <Empty title="No sessions yet">Start Claude Code in this repository. With the hooks installed, the session appears here the moment it sends its first prompt.</Empty> : null}
+					{!health || !(showHealth || unhealthy) ? <Empty title="Waiting for a prompt">Send a prompt in Claude Code in this repository. With the hooks installed, the run appears here the moment it starts.</Empty> : null}
 				</>
 			) : (
 				<div className="grid2" style={{ gridTemplateColumns: selected ? 'minmax(0,1fr) minmax(0,1.5fr)' : '1fr', alignItems: 'start' }}>

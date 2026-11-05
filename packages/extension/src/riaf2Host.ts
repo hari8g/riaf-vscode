@@ -4,7 +4,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import {
 	blobHash, buildInstruction, formatRouteLine, loadCurrentInstruction, rebudget, render, Riaf2, routeIntent, saveInstruction,
@@ -14,7 +14,7 @@ import {
 	formatMetrics, GovernorServer, handleClaudeHook, loadPolicyFile, ToolGovernor,
 	type CacheEntry, type CacheStore, type ClaudeHookPayload, type GovernorBackend, type GovernorMetrics, type GovernorPolicy,
 } from '@bosch-mps/token-opt';
-import { buildRunReport, classifyEvent, eventDetail, summarizeRun, type EventDetail, type RunEvent, type RunReport, type RunSummary } from './runReport.js';
+import { buildRunReport, classifyEvent, eventDetail, reportToMarkdown, summarizeRun, type EventDetail, type RunEvent, type RunReport, type RunSummary } from './runReport.js';
 
 export interface Riaf2HostOptions {
 	host?: string;
@@ -25,7 +25,15 @@ export interface Riaf2HostOptions {
 	governEnabled?: boolean;
 	/** Tier-2 intent arbiter (one small model call); absent = lexicon only. */
 	classify?: RouteOptions['classify'];
+	/** Earlier runs kept (closed, not live) when a new prompt starts. Default 0: every new prompt starts from a clean slate. */
+	keepRuns?: number;
 }
+
+/** A run is one prompt: `<claude session id>~<base36 time>`. Hooks of the same prompt share it; the next prompt gets a new one. */
+export const runKeyRaw = (key: string): string => key.split('~')[0];
+/** Runs idle longer than this are archived and deleted when the daemon starts or a prompt begins. */
+export const RUN_MAX_IDLE_MS = 12 * 3600_000;
+const MAX_ARCHIVED_REPORTS = 25;
 
 /** tool_cache table as the governor's CacheStore. */
 export function dbCacheStore(riaf: Riaf2): CacheStore {
@@ -71,6 +79,12 @@ export class Riaf2Host {
 	private readonly log: (m: string) => void;
 	private metricsTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly dirtyMetrics = new Map<string, GovernorMetrics>();
+	/** Claude session id → the run (prompt) currently being recorded. */
+	private readonly runKeys = new Map<string, string>();
+	private readonly runHasPrompt = new Set<string>();
+	/** Claude sessions replaced by a newer one: their stragglers are governed but no longer recorded. */
+	private readonly switchedOff = new Set<string>();
+	private lastHookAt: number | null = null;
 
 	constructor(readonly riaf: Riaf2, private readonly o: Riaf2HostOptions = {}) {
 		this.treeVersion = treeVersionFn(riaf.root);
@@ -131,10 +145,15 @@ export class Riaf2Host {
 	}
 
 	/** One poll of the live feed: new events for a session (default: the most recent one) plus its summary. */
-	activity(since: number, sessionId?: string | null): { sessionId: string | null; events: RunEvent[]; cursor: number; summary: RunSummary | null; now: number } {
+	activity(since: number, sessionId?: string | null, after = 0): { sessionId: string | null; events: RunEvent[]; cursor: number; summary: RunSummary | null; now: number } {
 		const sid = sessionId || this.latestSessionId();
 		const now = Date.now();
 		if (!sid) return { sessionId: null, events: [], cursor: since, summary: null, now };
+		// A page opened (or a task armed) after this run ended does not inherit it: it starts from a clean window.
+		if (!sessionId && after) {
+			const sum = summarizeRun(sid, this.runEvents(sid, { limit: 4000 }), now);
+			if (sum.status !== 'running' && sum.updatedAt < after) return { sessionId: null, events: [], cursor: since, summary: null, now };
+		}
 		const events = this.runEvents(sid, since ? { since } : { limit: 400 });
 		const all = since ? this.runEvents(sid, { limit: 4000 }) : events;
 		return { sessionId: sid, events, cursor: events.length ? events[events.length - 1].id : since, summary: summarizeRun(sid, all, now), now };
@@ -165,7 +184,7 @@ export class Riaf2Host {
 	/** What a session did: files, tests, governor effect, context quality, verified against git. */
 	runReport(sessionId: string): RunReport {
 		const events = this.runEvents(sessionId, { limit: 6000 });
-		const start = events.find(e => e.event === 'SessionStart' && e.detail?.head)?.detail;
+		const start = events.find(e => (e.event === 'SessionStart' || e.event === 'UserPromptSubmit') && e.detail?.head)?.detail;
 		const startHead = start?.head;
 		const editedByRun = events.filter(e => e.kind === 'edit' && e.detail?.file).map(e => e.detail!.file!);
 		const promptWithBrief = [...events].reverse().find(e => e.kind === 'prompt' && e.detail?.instruction)?.detail;
@@ -191,7 +210,7 @@ export class Riaf2Host {
 		return {
 			governor: { listening: this.server !== null, endpoint: this.endpoint, fileEndpoint, ownedByThisProcess: !!this.endpoint && this.endpoint === fileEndpoint, otherPid },
 			hookScript: existsSync(join(this.root, '.claude', 'hooks', 'riaf-govern.mjs')), settingsPresent: existsSync(settingsFile),
-			events, missing: required.filter(e => !events[e]), lastEventAt: last?.ts ?? null, eventsTotal: last?.n ?? 0,
+			events, missing: required.filter(e => !events[e]), lastEventAt: last?.ts ?? this.lastHookAt, eventsTotal: last?.n ?? 0,
 		};
 	}
 
@@ -205,9 +224,14 @@ export class Riaf2Host {
 			const sid = p.session_id ?? 'default';
 			let detail: EventDetail | null = eventDetail(p, this.relative);
 			if (p.hook_event_name === 'SessionStart') detail = { ...(detail ?? {}), head: this.git(['rev-parse', 'HEAD']) || undefined, branch: this.git(['rev-parse', '--abbrev-ref', 'HEAD']) || undefined, dirty: this.dirtyFiles() };
-			if (p.hook_event_name === 'UserPromptSubmit') { const li = this.lastInstruction.get(sid); if (li) detail = { ...(detail ?? {}), instruction: li.id, intent: li.intent, request: li.request, plan: li.plan, verify: li.verify, pack: li.pack }; }
+			if (p.hook_event_name === 'UserPromptSubmit') { if (!this.baselineRecorded(sid)) detail = { ...(detail ?? {}), head: this.git(['rev-parse', 'HEAD']) || undefined, branch: this.git(['rev-parse', '--abbrev-ref', 'HEAD']) || undefined, dirty: this.dirtyFiles() }; const li = this.lastInstruction.get(runKeyRaw(sid)); if (li) detail = { ...(detail ?? {}), instruction: li.id, intent: li.intent, request: li.request, plan: li.plan, verify: li.verify, pack: li.pack }; }
 			this.riaf.store.raw.run('INSERT INTO session_event(session_id, ts, event, tool, path, decision, reason, detail) VALUES (?,?,?,?,?,?,?,?)', [sid, Date.now(), p.hook_event_name ?? 'unknown', p.tool_name ?? null, path, decision, reason, detail ? JSON.stringify(detail) : null]);
 		} catch (e) { this.log(`recordEvent: ${String(e)}`); }
+	}
+
+	/** Does this run already carry a git baseline (from SessionStart)? */
+	private baselineRecorded(key: string): boolean {
+		return this.riaf.store.raw.all<{ n: number }>("SELECT COUNT(*) AS n FROM session_event WHERE session_id = ? AND event = 'SessionStart'", [key])[0]?.n > 0;
 	}
 
 	get root(): string { return this.riaf.root; }
@@ -340,9 +364,102 @@ export class Riaf2Host {
 
 	/** Claude Code hook entry point (called by the governor endpoint). */
 	async handleHook(payload: ClaudeHookPayload): Promise<unknown> {
-		const out = await this.handleHookInner(payload);
-		this.recordEvent(payload, out);
+		const raw = payload.session_id ?? 'default';
+		const isPrompt = payload.hook_event_name === 'UserPromptSubmit';
+		this.lastHookAt = Date.now();
+		if (isPrompt) this.switchedOff.delete(raw);
+		const key = this.runFor(raw, isPrompt);
+		const p: ClaudeHookPayload = key === raw ? payload : { ...payload, session_id: key };
+		// Show the new run at once; compiling the brief can take a moment.
+		if (isPrompt) { try { this.riaf.store.raw.run('INSERT INTO session_event(session_id, ts, event, decision) VALUES (?,?,?,?)', [key, Date.now(), 'PromptReceived', 'allow']); } catch { /* best effort */ } }
+		const out = await this.handleHookInner(p);
+		if (!this.switchedOff.has(raw)) this.recordEvent(p, out);
 		return out;
+	}
+
+	/**
+	 * Which run does this hook belong to? A prompt opens a fresh run (except the first prompt after SessionStart,
+	 * which continues the run SessionStart opened) and switches every other run off.
+	 */
+	private runFor(raw: string, isPrompt: boolean): string {
+		let key = this.runKeys.get(raw);
+		if (!key) {
+			const last = this.riaf.store.raw.all<{ session_id: string }>('SELECT session_id FROM session_event WHERE session_id = ? OR session_id LIKE ? ORDER BY id DESC LIMIT 1', [raw, `${raw}~%`])[0]?.session_id;
+			if (last) { key = last; this.runKeys.set(raw, key); if (this.hasPromptEvent(last)) this.runHasPrompt.add(last); }
+		}
+		if (!isPrompt) { if (!key) { key = raw; this.runKeys.set(raw, key); } return key; }
+		if (!key) { key = raw; this.runKeys.set(raw, key); this.runHasPrompt.add(key); this.retireOthers(key); return key; }
+		if (!this.runHasPrompt.has(key)) { this.runHasPrompt.add(key); this.retireOthers(key); return key; }
+		key = `${raw}~${Date.now().toString(36)}`;
+		this.runKeys.set(raw, key); this.runHasPrompt.add(key);
+		this.retireOthers(key);
+		return key;
+	}
+
+	private hasPromptEvent(key: string): boolean {
+		return this.riaf.store.raw.all<{ n: number }>("SELECT COUNT(*) AS n FROM session_event WHERE session_id = ? AND event = 'UserPromptSubmit'", [key])[0]?.n > 0;
+	}
+
+	/** Every run except `current`: save a report for the ones that did something, switch them off, delete them (keeping `keepRuns` most recent as closed). */
+	private retireOthers(current: string): void {
+		try {
+			const others = this.riaf.store.raw.all<{ session_id: string }>('SELECT session_id FROM session_event WHERE session_id != ? GROUP BY session_id ORDER BY MAX(id) DESC', [current]).map(r => r.session_id);
+			const keep = Math.max(0, this.o.keepRuns ?? 0);
+			others.forEach((id, i) => {
+				const raw = runKeyRaw(id);
+				if (raw !== runKeyRaw(current)) this.switchedOff.add(raw);
+				for (const [k, v] of this.runKeys) if (v === id) this.runKeys.delete(k);
+				if (i < keep) { this.closeRun(id); return; }
+				this.archiveRun(id);
+				this.deleteRun(id);
+			});
+			if (others.length) this.log(`new prompt: ${others.length} earlier run(s) switched off`);
+		} catch (e) { this.log(`retireOthers: ${String(e)}`); }
+	}
+
+	private closeRun(id: string): void {
+		const last = this.riaf.store.raw.all<{ event: string }>('SELECT event FROM session_event WHERE session_id = ? ORDER BY id DESC LIMIT 1', [id])[0];
+		if (last && last.event !== 'Superseded' && last.event !== 'SessionEnd') this.riaf.store.raw.run('INSERT INTO session_event(session_id, ts, event, decision) VALUES (?,?,?,?)', [id, Date.now(), 'Superseded', 'allow']);
+	}
+
+	private deleteRun(id: string): void {
+		this.riaf.store.raw.run('DELETE FROM session_event WHERE session_id = ?', [id]);
+		this.riaf.store.raw.run('DELETE FROM session_metric WHERE session_id = ?', [id]);
+		this.dirtyMetrics.delete(id); this.governors.delete(id); this.runHasPrompt.delete(id);
+	}
+
+	/** Runs that edited files, ran commands or tests keep a markdown report under .riaf/reports before they are deleted. */
+	private archiveRun(id: string): void {
+		try {
+			const events = this.runEvents(id, { limit: 6000 });
+			if (!events.some(e => e.kind === 'edit' || e.kind === 'test' || e.kind === 'command')) return;
+			const dir = join(this.root, '.riaf', 'reports');
+			mkdirSync(dir, { recursive: true });
+			const when = new Date(events[0].ts).toISOString().replace(/[:T]/g, '-').slice(0, 19);
+			writeFileSync(join(dir, `${when}-${runKeyRaw(id).slice(0, 8)}.md`), reportToMarkdown(this.runReport(id)));
+			const files = readdirSync(dir).filter(f => f.endsWith('.md')).sort();
+			for (const f of files.slice(0, Math.max(0, files.length - MAX_ARCHIVED_REPORTS))) { try { unlinkSync(join(dir, f)); } catch { /* ignore */ } }
+		} catch (e) { this.log(`archiveRun: ${String(e)}`); }
+	}
+
+	/** Saved reports of deleted runs, newest first. */
+	savedReports(): { name: string; ts: number; bytes: number }[] {
+		const dir = join(this.root, '.riaf', 'reports');
+		try { return readdirSync(dir).filter(f => f.endsWith('.md')).map(name => { const st = statSync(join(dir, name)); return { name, ts: st.mtimeMs, bytes: st.size }; }).sort((a, b) => b.ts - a.ts); } catch { return []; }
+	}
+	savedReport(name: string): string | null {
+		if (!/^[\w.-]+\.md$/.test(name)) return null;
+		try { return readFileSync(join(this.root, '.riaf', 'reports', name), 'utf8'); } catch { return null; }
+	}
+
+	/** Archive and delete runs nobody has touched for RUN_MAX_IDLE_MS, plus metric rows with no events. */
+	sweepRuns(now = Date.now()): number {
+		try {
+			const stale = this.riaf.store.raw.all<{ session_id: string }>('SELECT session_id FROM session_event GROUP BY session_id HAVING MAX(ts) < ?', [now - RUN_MAX_IDLE_MS]).map(r => r.session_id);
+			for (const id of stale) { this.archiveRun(id); this.deleteRun(id); for (const [k, v] of this.runKeys) if (v === id) this.runKeys.delete(k); }
+			this.riaf.store.raw.run('DELETE FROM session_metric WHERE updated_at < ? AND session_id NOT IN (SELECT DISTINCT session_id FROM session_event)', [now - RUN_MAX_IDLE_MS]);
+			return stale.length;
+		} catch (e) { this.log(`sweepRuns: ${String(e)}`); return 0; }
 	}
 
 	private async handleHookInner(payload: ClaudeHookPayload): Promise<unknown> {
@@ -358,7 +475,7 @@ export class Riaf2Host {
 				return [`RIAF repository intelligence is active for this repository.`, await this.riaf.conventionsText(), await this.riaf.architectureText()].join('\n\n');
 			},
 			onUserPrompt: async (prompt, p) => {
-				const sid = p.session_id ?? 'default';
+				const sid = runKeyRaw(p.session_id ?? 'default');
 				const text = prompt.trim();
 				if (text.startsWith('/') || text.split(/\s+/).length < 4) return undefined;
 				const route = await this.route(text);
@@ -384,6 +501,7 @@ export class Riaf2Host {
 		}, { log: this.log });
 		const info = await this.server.start();
 		this.endpoint = info.endpoint;
+		this.sweepRuns();
 		return info.endpoint;
 	}
 

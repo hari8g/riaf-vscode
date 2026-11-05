@@ -291,7 +291,9 @@ export class RiafDaemon {
 			/* sessions */
 			case 'GET /sessions': return { sessions: host.runSummaries(Number(q('limit') ?? 50)), status: host.statusText(), health: host.hookHealth() };
 			// Live feed: poll with the cursor from the previous answer; omit `session` to follow the most recent one.
-			case 'GET /activity': return host.activity(Number(q('since') ?? 0), q('session'));
+			case 'GET /activity': return host.activity(Number(q('since') ?? 0), q('session'), Number(q('after') ?? 0));
+			case 'GET /reports': return { reports: host.savedReports() };
+			case 'GET /reports/file': { const t = host.savedReport(q('name') ?? ''); if (t === null) throw new HttpError(404, 'no such report'); return { name: q('name'), markdown: t }; }
 			case 'GET /session/report': { const id = q('id') || host.latestSessionId(); if (!id) throw new HttpError(404, 'no sessions recorded yet'); const report = host.runReport(id); return q('format') === 'md' ? { markdown: reportToMarkdown(report) } : { report, markdown: reportToMarkdown(report) }; }
 			case 'GET /session': { const id = q('id'); if (!id) throw new HttpError(400, 'id required'); return { id, events: host.sessionEvents(id, Number(q('limit') ?? 500)), metrics: host.sessions(500).find(s => s.sessionId === id) ?? null }; }
 			case 'GET /audit': return { entries: readAudit(root, Number(q('limit') ?? 100)) };

@@ -11,7 +11,7 @@ export function ToastHost({ children }: { children: React.ReactNode }) {
 		setList(l => [...l, { id, text, kind }]);
 		setTimeout(() => setList(l => l.filter(t => t.id !== id)), kind === 'err' ? 6000 : 3200);
 	}, []);
-	return <ToastCtx.Provider value={push}>{children}<div className="toasts" aria-live="polite">{list.map(t => <div key={t.id} className={`toast ${t.kind === 'err' ? 'err' : ''}`}>{t.text}</div>)}</div></ToastCtx.Provider>;
+	return <ToastCtx.Provider value={push}>{children}<div className="toasts" aria-live="polite">{list.map(t => <div key={t.id} className={`toast ${t.kind === 'err' ? 'err' : ''}`}><b aria-hidden="true">{t.kind === 'err' ? '!' : '✓'}</b><span>{t.text}</span></div>)}</div></ToastCtx.Provider>;
 }
 
 /* ───────── theme ───────── */
@@ -94,6 +94,7 @@ export function Palette({ open, onClose, items, search }: { open: boolean; onClo
 				<input ref={ref} value={q} onChange={e => { setQ(e.target.value); setIdx(0); }} placeholder="Jump to a page, or type a file or symbol name" aria-label="Command palette"
 					onKeyDown={e => { if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(list.length - 1, i + 1)); } if (e.key === 'ArrowUp') { e.preventDefault(); setIdx(i => Math.max(0, i - 1)); } if (e.key === 'Enter' && list[idx]) { list[idx].run(); onClose(); } if (e.key === 'Escape') onClose(); }} />
 				<div className="res">{list.map((it, i) => <div key={it.id} className={i === idx ? 'on' : ''} onMouseEnter={() => setIdx(i)} onClick={() => { it.run(); onClose(); }}><span>{it.label}</span><span className="muted small">{it.hint}</span></div>)}{!list.length && <div className="muted">Nothing matches.</div>}</div>
+				<div className="palfoot"><span><span className="kbd">↑</span> <span className="kbd">↓</span> move</span><span><span className="kbd">↵</span> open</span><span><span className="kbd">esc</span> close</span></div>
 			</div>
 		</div>
 	);

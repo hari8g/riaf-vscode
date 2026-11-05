@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { api, ago, clock, fmtDur, fmtK, type EventKind, type Health, type RunEvent, type RunReport, type RunStatus, type RunSummary } from './api.js';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { api, ago, boot, clock, fmtDur, fmtK, type EventKind, type Health, type RunEvent, type RunReport, type RunStatus, type RunSummary } from './api.js';
 import { Btn, Chip, useToast } from './kit.js';
 
 /* ───────── live polling ───────── */
@@ -8,7 +8,16 @@ import { Btn, Chip, useToast } from './kit.js';
  * Follow one Claude Code session. Polls /api/activity with a cursor, faster while the run is active and
  * paused while the tab is hidden. `sessionId` null follows whichever session is most recent.
  */
+/**
+ * "Armed" marks when this window last started from a clean slate (page load, New task, Send to Claude Code).
+ * A finished run from before that moment is not shown: the window waits for the next prompt instead.
+ */
+const armed = { at: Date.now(), epoch: 0, subs: new Set<() => void>() };
+export function rearm(): void { armed.at = Date.now(); armed.epoch++; armed.subs.forEach(f => f()); }
+
 export function useLiveRun(sessionId: string | null, enabled = true) {
+	const [epoch, setEpoch] = useState(armed.epoch);
+	useEffect(() => { const f = () => setEpoch(armed.epoch); armed.subs.add(f); return () => void armed.subs.delete(f); }, []);
 	const [events, setEvents] = useState<RunEvent[]>([]);
 	const [summary, setSummary] = useState<RunSummary | null>(null);
 	const [sid, setSid] = useState<string | null>(sessionId);
@@ -18,7 +27,7 @@ export function useLiveRun(sessionId: string | null, enabled = true) {
 	const cur = useRef<string | null>(null);
 	const status = useRef<RunStatus | null>(null);
 
-	useEffect(() => { setEvents([]); setSummary(null); cursor.current = 0; cur.current = null; status.current = null; }, [sessionId]);
+	useEffect(() => { setEvents([]); setSummary(null); setSid(sessionId); cursor.current = 0; cur.current = null; status.current = null; }, [sessionId, epoch]);
 
 	useEffect(() => {
 		if (!enabled) return;
@@ -27,7 +36,7 @@ export function useLiveRun(sessionId: string | null, enabled = true) {
 			if (stop) return;
 			if (!document.hidden) {
 				try {
-					const r = await api.get<{ sessionId: string | null; events: RunEvent[]; cursor: number; summary: RunSummary | null }>(`/activity?since=${cursor.current}&session=${encodeURIComponent(sessionId ?? '')}`);
+					const r = await api.get<{ sessionId: string | null; events: RunEvent[]; cursor: number; summary: RunSummary | null }>(`/activity?since=${cursor.current}&session=${encodeURIComponent(sessionId ?? '')}&after=${sessionId ? 0 : armed.at}`);
 					if (stop) return;
 					if (r.sessionId !== cur.current) { cur.current = r.sessionId; cursor.current = 0; setEvents(r.events); } // a newer session started: start its feed over
 					else if (r.events.length) setEvents(prev => [...prev, ...r.events.filter(e => !prev.some(p => p.id === e.id))].slice(-2500));
@@ -42,10 +51,15 @@ export function useLiveRun(sessionId: string | null, enabled = true) {
 		const wake = () => { if (!document.hidden) { clearTimeout(timer); void tick(); } };
 		document.addEventListener('visibilitychange', wake);
 		return () => { stop = true; clearTimeout(timer); document.removeEventListener('visibilitychange', wake); };
-	}, [sessionId, enabled]);
+	}, [sessionId, enabled, epoch]);
 
 	return { events, summary, sessionId: sid, error, polledAt };
 }
+
+const LiveCtx = createContext<ReturnType<typeof useLiveRun> | null>(null);
+/** One poller for the whole console: the top bar and the Studio panel read the same live run. */
+export function LiveRunProvider({ children }: { children: React.ReactNode }) { const v = useLiveRun(null); return <LiveCtx.Provider value={v}>{children}</LiveCtx.Provider>; }
+export const useLive = () => { const v = useContext(LiveCtx); if (!v) throw new Error('LiveRunProvider missing'); return v; };
 
 /** Rendered report for a session; refetches when `version` changes (new events) while visible. */
 export function useRunReport(sessionId: string | null, version: number, enabled: boolean) {
@@ -249,7 +263,7 @@ export function RunReportView({ report: r, markdown, go }: { report: RunReport; 
 
 export function RunPanel({ go }: { go: (page: string, q?: string) => void }) {
 	const toast = useToast();
-	const { events, summary, sessionId, error } = useLiveRun(null);
+	const { events, summary, sessionId, error } = useLive();
 	const [tab, setTab] = useState<'live' | 'report'>('live');
 	const [open, setOpen] = useState(true);
 	const prev = useRef<RunStatus | null>(null);
@@ -260,14 +274,17 @@ export function RunPanel({ go }: { go: (page: string, q?: string) => void }) {
 		prev.current = s;
 	}, [summary?.status, toast]);
 	const { report, markdown, busy } = useRunReport(sessionId, events.length, tab === 'report' && open && !!summary);
+	const repo = boot.root.split(/[\\/]/).filter(Boolean).pop() ?? 'this repository';
 
 	if (!summary) {
 		return (
-			<section className="panel runpanel idle">
-				<div className="row" style={{ justifyContent: 'space-between' }}>
-					<div><h2>Claude Code activity</h2><div className="small muted">{error ? `Can't reach the daemon: ${error}` : 'Nothing yet. When you run Claude Code in this repository, every step shows up here live, and a report appears when it finishes.'}</div></div>
-					<Btn sm kind="ghost" onClick={() => go('sessions')}>Check the connection</Btn>
+			<section className="panel runpanel idle ready">
+				<span className="radar" aria-hidden="true"><i /><i /><i /></span>
+				<div style={{ flex: 1, minWidth: 220 }}>
+					<h2>{error ? 'Cannot reach the daemon' : 'Ready for your next prompt'}</h2>
+					<div className="small muted">{error ? error : <>Run Claude Code in <code>{repo}</code>. Each step appears here as it happens and a report is written when it finishes. Every new prompt starts a clean run; earlier ones are cleared.</>}</div>
 				</div>
+				<Btn sm kind="ghost" onClick={() => go('sessions')}>Check the connection</Btn>
 			</section>
 		);
 	}
@@ -277,14 +294,15 @@ export function RunPanel({ go }: { go: (page: string, q?: string) => void }) {
 			<div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
 				<div style={{ minWidth: 0, flex: 1 }}>
 					<div className="row" style={{ gap: 10 }}><h2>Claude Code activity</h2><StatusPill status={summary.status} /></div>
-					<div className="small muted rt" title={summary.title ?? ''}>started {ago(summary.startedAt)} · {summary.title ?? 'Session'}</div>
+					<div className="small muted rt" title={summary.title ?? ''}>started {ago(summary.startedAt)} · {summary.title ?? 'Current prompt'}</div>
 				</div>
 				<div className="row">
-					<div className="tabs" style={{ marginBottom: 0, borderBottom: 0 }}>
-						<button className={tab === 'live' ? 'on' : ''} onClick={() => { setTab('live'); setOpen(true); }}>Live</button>
-						<button className={tab === 'report' ? 'on' : ''} onClick={() => { setTab('report'); setOpen(true); }}>Report</button>
+					<div className="seg2" role="tablist">
+						<button role="tab" aria-selected={tab === 'live'} className={tab === 'live' ? 'on' : ''} onClick={() => { setTab('live'); setOpen(true); }}>Live</button>
+						<button role="tab" aria-selected={tab === 'report'} className={tab === 'report' ? 'on' : ''} onClick={() => { setTab('report'); setOpen(true); }}>Report</button>
 					</div>
 					<Btn sm kind="ghost" onClick={() => go('sessions', `id=${encodeURIComponent(summary.sessionId)}`)}>Open in Sessions</Btn>
+					{!live && <Btn sm kind="ghost" onClick={() => rearm()} title="Clear this run and wait for the next prompt">Clear</Btn>}
 					<Btn sm kind="ghost" onClick={() => setOpen(o => !o)} title={open ? 'Collapse' : 'Expand'}>{open ? 'Hide' : 'Show'}</Btn>
 				</div>
 			</div>

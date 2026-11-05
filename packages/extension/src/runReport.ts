@@ -154,6 +154,8 @@ export function classifyEvent(e: { event: string; tool: string | null; path: str
 	switch (e.event) {
 		case 'SessionStart': return { kind: 'start', label: 'Session started' };
 		case 'SessionEnd': return { kind: 'end', label: 'Session ended' };
+		case 'PromptReceived': return { kind: 'briefing', label: 'Task received. RIAF is preparing the brief…' };
+		case 'Superseded': return { kind: 'end', label: 'Closed: a newer prompt started a new run' };
 		case 'Stop': return { kind: 'turn-end', label: 'Claude Code finished its turn' };
 		case 'SubagentStop': return { kind: 'subagent', label: 'A sub-agent finished' };
 		case 'UserPromptSubmit': return { kind: 'prompt', label: d?.prompt ? `Task: ${short(d.prompt, 140)}` : 'Prompt submitted' };
@@ -195,7 +197,7 @@ export const RUNNING_WINDOW_MS = 3 * 60_000;
 export function runStatus(events: { event: string; ts: number }[], now: number): RunStatus {
 	const last = events[events.length - 1];
 	if (!last) return 'stale';
-	if (last.event === 'SessionEnd') return 'finished';
+	if (last.event === 'SessionEnd' || last.event === 'Superseded') return 'finished';
 	if (last.event === 'Stop') return now - last.ts > 6 * 3600_000 ? 'finished' : 'waiting';
 	return now - last.ts <= RUNNING_WINDOW_MS ? 'running' : 'stale';
 }

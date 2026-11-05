@@ -111,9 +111,11 @@ describe('Riaf2Host (MCP-side wiring of index, compiler and governor)', () => {
 	}, 30_000);
 
 	it('records a plan into the current pack for sub-agents', () => {
+		// Governors of runs that a newer prompt replaced are dropped, so open the one the plan should move first.
+		const g = host.governorFor('s1');
 		const p = host.setPlan(['round in price()', 'update Cart.total', 'run tests']);
 		expect(riaf.currentPack()?.plan_skeleton).toEqual(p?.plan_skeleton);
-		expect(host.governorFor('s1').phase).toBe('plan');
+		expect(g.phase).toBe('plan');
 	});
 
 	it('governs through the real hook script and endpoint', async () => {

@@ -72,12 +72,10 @@ describe('live run feed, sessions list and run report (hook payloads in, console
 		expect(next.json.summary.filesEdited).toBe(2);
 	});
 
-	it('Stop marks the run as done, and "latest" follows the newest session', async () => {
+	it('Stop marks the run as done', async () => {
 		await hook({ hook_event_name: 'Stop' });
 		const a = await call('GET', '/activity?since=0');
 		expect(a.json.sessionId).toBe('S1'); expect(a.json.summary.status).toBe('waiting');
-		await hook({ session_id: 'NEWER', hook_event_name: 'UserPromptSubmit', prompt: 'something else' });
-		expect((await call('GET', '/activity?since=0')).json.sessionId).toBe('NEWER');
 	});
 
 	it('builds the report: verdict, red to green, files verified against git, markdown', async () => {
@@ -109,9 +107,9 @@ describe('live run feed, sessions list and run report (hook payloads in, console
 		expect(existsSync(join(root, '.riaf', 'policy.yaml'))).toBe(true);
 	});
 
-	it('the sessions list carries counters for governed sessions and is newest first', async () => {
+	it('the sessions list carries the current run with its governor counters', async () => {
 		const rows = (await call('GET', '/sessions')).json.sessions as any[];
-		expect(rows[0].sessionId).toBe('NEWER');
+		expect(rows.map(r => r.sessionId)).toEqual(['S1']); // the earlier "ONLY" session was cleared when S1 sent its prompt
 		const s1 = rows.find(r => r.sessionId === 'S1');
 		expect(s1.counters.proposed).toBeGreaterThan(0); expect(s1.title).toMatch(/multiply/);
 	});
