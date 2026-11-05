@@ -47,6 +47,19 @@ const TICKET_RE = /\b([A-Z][A-Z0-9]{1,9}-\d{1,6})\b|(?:^|\s)(#\d{1,6})\b/g;
 const CONSTRAINT_RE = /(?:^|[.;,\n]\s*|\b(?:but|and)\s+)((?:do not|don't|dont|never|must not|mustn't|without|avoid|keep|preserve|only|no (?:changes?|new)|leave)\b[^.;\n]*)/gi;
 const ACCEPT_RE = /(?:^|[.;,\n]\s*)((?:it |this |the \w+ )?(?:should|must|needs? to|so that|expect(?:ed)?|ensure|make sure|acceptance:?)\b[^.;\n]*)/gi;
 
+/** Code that happens to contain "expect" or "keep" is not a requirement: `expect(screen`, `x => y`, `a = b;`. */
+const CODE_LIKE = /=>|[{};]|\b\w+\([^)]*$|^\w+\.\w+\(|^\s*(?:expect|assert|describe|it|test)\(/;
+/** Drop code fragments and items too short to be a sentence, and repeats (same text, any case). */
+function tidy(items: string[], minWords: number): string[] {
+	const seen = new Set<string>();
+	return items.filter(i => {
+		const k = i.toLowerCase();
+		if (seen.has(k) || CODE_LIKE.test(i) || i.split(/\s+/).length < minWords) return false;
+		seen.add(k);
+		return true;
+	});
+}
+
 export function splitIdentifier(id: string): string[] {
 	return id.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').split(/[\s_.$\-/]+/).map(s => s.toLowerCase()).filter(Boolean);
 }
@@ -115,8 +128,8 @@ export function parseIntent(request: string, extra: { activeFile?: string; selec
 	const type: IntentType = best === 0 ? (/\?\s*$/.test(text) ? 'explain' : 'feature') : bestType;
 	const confidence = best === 0 ? 0.3 : Math.min(1, 0.5 + (best - second) / (best + 1) * 0.5);
 
-	const constraints = [...text.matchAll(CONSTRAINT_RE)].map(m => m[1].trim().replace(/\s+/g, ' ')).filter(s => s.length > 6);
-	const acceptance = [...text.matchAll(ACCEPT_RE)].map(m => m[1].trim().replace(/\s+/g, ' ')).filter(s => s.length > 8 && !constraints.includes(s));
+	const constraints = tidy([...text.matchAll(CONSTRAINT_RE)].map(m => m[1].trim().replace(/\s+/g, ' ')).filter(s => s.length > 6), 2);
+	const acceptance = tidy([...text.matchAll(ACCEPT_RE)].map(m => m[1].trim().replace(/\s+/g, ' ')).filter(s => s.length > 8 && !constraints.includes(s)), 3);
 
 	const terms = new Set<string>();
 	for (const e of entities) {

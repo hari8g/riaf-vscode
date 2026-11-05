@@ -22,6 +22,8 @@ import type { Riaf2Host } from '../riaf2Host.js';
 import { ADAPTER_IDS, adapterSettings, allAdapters, getAdapter, isEnabled, missingCredentials, type AdapterEnv, type AdapterId, type IntegrationsConfig } from '../integrations/index.js';
 import { readAudit } from '../integrations/audit.js';
 import { mcpJsonStatus } from '../claudeCodeStatus.js';
+import { reportToMarkdown } from '../runReport.js';
+import { writeClaudeGovernance } from '@bosch-mps/riaf-engine';
 import { claudeLaunchCommand, writeInstructionForClaude } from '../instructionFlow.pure.js';
 
 export interface DaemonIntegrations {
@@ -282,9 +284,17 @@ export class RiafDaemon {
 			}
 			case 'GET /claude-setup': return this.claudeSetupStatus();
 			case 'POST /claude-setup': { if (!this.d.setupClaudeCode) throw new HttpError(501, 'Claude Code setup runs from VS Code (RIAF: Set up Claude Code) or `riaf init --host claude`'); return { written: await this.d.setupClaudeCode() }; }
+			// Standalone-friendly: writes only the hook client, .claude/settings.json hooks, policy and the CLAUDE.md block (what `riaf init --host claude` writes).
+			case 'POST /hooks/install': return { written: writeClaudeGovernance(root).map(f => f.startsWith(root) ? f.slice(root.length + 1) : f) };
+			case 'GET /hooks/health': return host.hookHealth();
 
 			/* sessions */
-			case 'GET /sessions': return { sessions: host.sessions(Number(q('limit') ?? 100)), status: host.statusText() };
+			case 'GET /sessions': return { sessions: host.runSummaries(Number(q('limit') ?? 50)), status: host.statusText(), health: host.hookHealth() };
+			// Live feed: poll with the cursor from the previous answer; omit `session` to follow the most recent one.
+			case 'GET /activity': return host.activity(Number(q('since') ?? 0), q('session'), Number(q('after') ?? 0));
+			case 'GET /reports': return { reports: host.savedReports() };
+			case 'GET /reports/file': { const t = host.savedReport(q('name') ?? ''); if (t === null) throw new HttpError(404, 'no such report'); return { name: q('name'), markdown: t }; }
+			case 'GET /session/report': { const id = q('id') || host.latestSessionId(); if (!id) throw new HttpError(404, 'no sessions recorded yet'); const report = host.runReport(id); return q('format') === 'md' ? { markdown: reportToMarkdown(report) } : { report, markdown: reportToMarkdown(report) }; }
 			case 'GET /session': { const id = q('id'); if (!id) throw new HttpError(400, 'id required'); return { id, events: host.sessionEvents(id, Number(q('limit') ?? 500)), metrics: host.sessions(500).find(s => s.sessionId === id) ?? null }; }
 			case 'GET /audit': return { entries: readAudit(root, Number(q('limit') ?? 100)) };
 

@@ -219,3 +219,16 @@ export function upsertClaudeMdInstruction(existing: string, instr: PromptInstruc
 	if (re.test(existing)) return existing.replace(re, block);
 	return `${existing.replace(/\s*$/, '')}${existing.trim() ? '\n\n' : ''}${block}\n`;
 }
+
+
+/**
+ * A prompt that already IS a compiled RIAF brief (pasted or sent with `claude "$(cat current.md)"`): its id and the request it carries.
+ * Hooks use this to avoid compiling a brief of a brief, and reports to show the real task instead of the boilerplate.
+ */
+export function extractBriefRequest(text: string): { id: string; request: string; intent?: string } | null {
+	const head = /^\s*#\s*RIAF Prompt Instruction\s+([0-9a-f]{6,16})\b/i.exec(text);
+	if (!head) return null;
+	const task = /^##\s*Task\s*\(([a-z]+)[^)\n]*\)[^\n]*\n([\s\S]*?)(?=\n\s*\n(?:Route:|Constraints:|Acceptance:|Open questions)|\n##\s|(?![\s\S]))/m.exec(text);
+	const request = (task?.[2] ?? '').replace(/\s+/g, ' ').trim();
+	return { id: head[1], request: request || `RIAF brief ${head[1]}`, ...(task?.[1] ? { intent: task[1] } : {}) };
+}

@@ -177,7 +177,7 @@ export {
 } from './v2/intentRouter.js';
 export { findRuleFiles, loadProjectRules, RULES_MAX_CHARS, type ProjectRules } from './v2/projectRules.js';
 export {
-	buildInstruction, saveInstruction, loadCurrentInstruction, listInstructions, instructionDir, stableSection, claudeMdInstructionBlock, upsertClaudeMdInstruction,
+	buildInstruction, extractBriefRequest, saveInstruction, loadCurrentInstruction, listInstructions, instructionDir, stableSection, claudeMdInstructionBlock, upsertClaudeMdInstruction,
 	INSTRUCTION_SCHEMA, INSTRUCTION_DIR, type PromptInstruction, type BuildInstructionOptions, type PolicyBudgets, type SavedInstruction,
 } from './v2/instruction.js';
 export { PACK_SCHEMA_VERSION, validatePack, type ContextPack, type PackItem, type PackItemKind, type PackItemForm } from './v2/packTypes.js';

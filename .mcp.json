@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "riaf": {
+      "command": "node",
+      "args": [
+        "/Users/harig/riaf_2_0/.riaf/riaf-mcp.mjs",
+        "--workspace",
+        "/Users/harig/riaf_2_0",
+        "--db",
+        "/Users/harig/Library/Application Support/Code/User/globalStorage/bosch-mps.riaf-vscode/riaf-9170bb94febecb56.sqlite"
+      ],
+      "env": {}
+    }
+  }
+}

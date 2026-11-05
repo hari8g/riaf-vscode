@@ -243,6 +243,21 @@ governed session with the governor's decision per tool call). It binds to `127.0
 per-start token in `.riaf/daemon.json`. Inside VS Code it runs in the extension host (one SQLite
 writer); standalone it is `node <extension>/dist/daemon.mjs --workspace <repo> [--port 7421] [--open]`.
 
+**Watching Claude Code work.** Studio has a *Claude Code activity* panel: while a run is going it shows
+each step as it happens (files read, searches, edits with line counts, test runs with pass/fail bars,
+calls RIAF answered from the index), polled every second; when Claude Code stops it switches to a
+*run report* (what was done, how, files changed checked against `git`, unit-test runs and whether the
+suite went red to green, context-pack hit rate, governor savings), downloadable as markdown.
+**Every prompt is a fresh run.** A new prompt opens its own run, switches every earlier run off and
+clears it (a markdown report of any run that edited files or ran tests is saved first under
+`.riaf/reports`, newest 25 kept; runs idle for 12 hours are swept when the daemon starts). Studio starts
+with an empty prompt window per repository and per browser tab, and a finished run from before the page
+was opened is not shown. *Sessions* shows the current run, refreshes by itself, and its **Connection**
+checklist says why a run is missing (hooks not installed, another RIAF process owning
+`.riaf/governor.json`, no events received) with an **Install or update hooks** button. The
+report needs the `Stop`, `SessionEnd` and `PostToolUseFailure` hooks, so after upgrading re-run the
+install (`riaf init --host claude`, **RIAF: Set up Claude Code**, or the button) and restart Claude Code.
+
 Settings: `riaf.instruction.*` (intentRouting, arbiter, planGate, exploreLane, showCard, autoRun,
 hookBudget), `riaf.models.classify`, `riaf.console.port`, `riaf.console.autoStart` — all in
 **RIAF: Open Settings → Intent & Instruction**.

@@ -199,10 +199,15 @@ describe('Claude Code hook bridge', () => {
 		const once = mergeGovernHooks({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'x' }] }] } }, 'node "/r/.claude/hooks/riaf-govern.mjs"');
 		const twice = mergeGovernHooks(once, 'node "/other/.claude/hooks/riaf-govern.mjs"');
 		const h = twice.hooks as Record<string, unknown[]>;
-		expect(h.Stop).toHaveLength(1);
+		// The repo's own Stop hook is kept, and RIAF's (which marks a finished run) is added once, not duplicated by a re-merge.
+		expect(h.Stop).toHaveLength(2);
+		expect(JSON.stringify(h.Stop)).toContain('"command":"x"');
+		expect(h.Stop.filter(g => JSON.stringify(g).includes('riaf-govern.mjs'))).toHaveLength(1);
 		expect(h.PreToolUse).toHaveLength(1);
 		expect(JSON.stringify(h.PreToolUse)).toMatch(/other/);
-		expect(Object.keys(h)).toEqual(expect.arrayContaining(['PreToolUse', 'PostToolUse', 'SessionStart', 'UserPromptSubmit']));
+		expect(Object.keys(h)).toEqual(expect.arrayContaining(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'SessionEnd']));
+		expect(JSON.stringify(h.PostToolUse)).toContain('Task');
+		expect(JSON.stringify(h.PostToolUse)).toContain('mcp__riaf__');
 	});
 
 	it('runs the real hook script against a live governor endpoint (and fails open without one)', async () => {

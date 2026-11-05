@@ -71,6 +71,7 @@ export async function handleClaudeHook(p: ClaudeHookPayload, deps: ClaudeHookHan
 		return {};
 	}
 	if (event === 'PostToolUse') {
+		if ((p.tool_name ?? '').startsWith('mcp__riaf__')) return {}; // RIAF's own tools are logged by the host, not counted as executed calls
 		const gov = deps.governorFor(sid);
 		const out = toolResponseText(p.tool_response);
 		const isError = !!(p.tool_response && typeof p.tool_response === 'object' && ((p.tool_response as Record<string, unknown>).is_error || (p.tool_response as Record<string, unknown>).isError));

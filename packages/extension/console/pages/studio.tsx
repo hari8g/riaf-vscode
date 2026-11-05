@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { api, type Instruction, type PackItem, type PackMeta, type Route, type Status } from '../api.js';
+import { RunPanel, rearm, useLive } from '../run.js';
+import { api, boot, type Instruction, type PackItem, type PackMeta, type Route, type Status } from '../api.js';
 import { Arc, Btn, Chip, Drawer, Empty, fmtK, shortPath, useToast } from '../kit.js';
 import { mdToHtml } from '../md.js';
 import type { Page } from '../main.js';
@@ -13,10 +14,18 @@ const EXAMPLES = [
 	'Migrate the service from Spring Boot 2 to Spring Boot 3',
 ];
 
+/** Studio state lives in this tab, per repository: a different repo, or a new tab, starts with an empty prompt window. */
+const SKEY = `riaf.studio:${boot.root}`;
+type Draft = { request?: string; activeFile?: string; compiled?: string };
+const readDraft = (): Draft => { try { return JSON.parse(sessionStorage.getItem(SKEY) ?? '{}') as Draft; } catch { return {}; } };
+const writeDraft = (d: Draft) => { try { sessionStorage.setItem(SKEY, JSON.stringify(d)); } catch { /* private mode */ } };
+
 export function Studio({ status, refresh, go }: { status: Status | null; refresh: () => Promise<void>; go: (p: Page, q?: string) => void }) {
 	const toast = useToast();
-	const [request, setRequest] = useState('');
-	const [activeFile, setActiveFile] = useState('');
+	const liveRun = useLive().summary;
+	const [request, setRequest] = useState(() => readDraft().request ?? '');
+	const [activeFile, setActiveFile] = useState(() => readDraft().activeFile ?? '');
+	const [last, setLast] = useState<Instruction | null>(null);
 	const [budget, setBudget] = useState<number | null>(null);
 	const [route, setRoute] = useState<Route | null>(null);
 	const [pack, setPack] = useState<PackMeta | null>(null);
@@ -36,10 +45,16 @@ export function Studio({ status, refresh, go }: { status: Status | null; refresh
 	const ta = useRef<HTMLTextAreaElement>(null);
 
 	useEffect(() => {
-		api.get<{ instruction: Instruction | null; pack: PackMeta | null }>('/instruction/current').then(r => { if (r.instruction) { setInstr(r.instruction); setRequest(r.instruction.request); } if (r.pack) setPack(r.pack); }).catch(() => undefined);
+		// Only a brief compiled in this tab for this repository comes back; anything older waits behind "Resume last brief".
+		api.get<{ instruction: Instruction | null; pack: PackMeta | null }>('/instruction/current').then(r => {
+			const mine = readDraft().compiled;
+			if (r.instruction && mine && r.instruction.instruction_id === mine) { setInstr(r.instruction); if (r.pack) setPack(r.pack); }
+			else if (r.instruction) setLast(r.instruction);
+		}).catch(() => undefined);
 		api.get<{ instructions: typeof history }>('/instructions').then(r => setHistory(r.instructions)).catch(() => undefined);
 		const q = new URLSearchParams(location.hash.split('?')[1] ?? '').get('task'); if (q) { setRequest(q); setTimeout(() => ta.current?.focus(), 50); }
 	}, []);
+	useEffect(() => { writeDraft({ ...readDraft(), request, activeFile }); }, [request, activeFile]);
 	useEffect(() => {
 		if (request.trim().split(/\s+/).length < 3) { setRoute(null); return; }
 		const t = setTimeout(() => api.post<Route>('/classify', { request, activeFile: activeFile || undefined }).then(setRoute).catch(() => undefined), 300);
@@ -55,7 +70,7 @@ export function Studio({ status, refresh, go }: { status: Status | null; refresh
 		try {
 			const r = await api.post<{ route: Route; pack: PackMeta; instruction: Instruction }>('/instruction', { request, activeFile: activeFile || undefined, budget: effectiveBudget, fresh, host: 'claude', pinned: [...pinned], excluded: [...dropped] });
 			setRoute(r.route); setPack(r.pack); setInstr(r.instruction); setApplied({ pinned: [...pinned], excluded: [...dropped] });
-			setJustCompiled(true); setTimeout(() => setJustCompiled(false), 700);
+			setJustCompiled(true); setTimeout(() => setJustCompiled(false), 700); setLast(null); writeDraft({ ...readDraft(), compiled: r.instruction.instruction_id }); rearm();
 			setHistory(h => [{ id: r.instruction.instruction_id, generated_at: Date.now(), request: r.instruction.request, type: r.instruction.intent.type }, ...h.filter(x => x.id !== r.instruction.instruction_id)].slice(0, 100));
 			toast(`Compiled ${r.pack.items.length} items in ${r.pack.provenance.compile_ms} ms`);
 			await refresh();
@@ -63,9 +78,14 @@ export function Studio({ status, refresh, go }: { status: Status | null; refresh
 	};
 	const send = async () => {
 		setBusy('send');
-		try { const s = await api.post<{ written: string[]; command: string; headless: string }>('/send-to-claude', {}); setSent(s); toast('Written for Claude Code'); await refresh(); }
+		try { const s = await api.post<{ written: string[]; command: string; headless: string }>('/send-to-claude', {}); setSent(s); rearm(); toast('Written for Claude Code. The activity panel is waiting for its first step.'); await refresh(); }
 		catch (e) { toast((e as Error).message, 'err'); } finally { setBusy(null); }
 	};
+	const newTask = () => {
+		writeDraft({}); setRequest(''); setActiveFile(''); setPack(null); setInstr(null); setRoute(null); setSent(null); setPinned(new Set()); setDropped(new Set()); setBudget(null); setView('brief'); rearm();
+		setTimeout(() => ta.current?.focus(), 30);
+	};
+	const resume = () => { if (!last) return; setInstr(last); setRequest(last.request); writeDraft({ ...readDraft(), request: last.request, compiled: last.instruction_id }); api.get<{ pack: PackMeta | null }>('/instruction/current').then(r => { if (r.pack) setPack(r.pack); }).catch(() => undefined); setLast(null); };
 	const copy = async (text: string, what: string) => { await navigator.clipboard.writeText(text); toast(`${what} copied`); };
 	const correct = async (t: string) => { if (!route) return; await api.post('/feedback', { request, predicted: route.type, corrected: t }); setRoute(await api.post<Route>('/classify', { request })); toast(`Noted: similar requests will route as ${t}`); };
 	const renderAs = async (f: typeof FORMATS[number]) => { setFormat(f); try { setRendered((await api.post<{ text: string }>('/pack/render', { format: f })).text); } catch (e) { toast((e as Error).message, 'err'); } };
@@ -78,15 +98,33 @@ export function Studio({ status, refresh, go }: { status: Status | null; refresh
 
 	return (
 		<>
-			<h1>Studio</h1>
-			<p className="lead">Describe the task. RIAF classifies it as you type, compiles the context an agent needs, and writes one brief you can read, trim and hand to Claude Code.</p>
+			<header className="pagehead">
+				<div>
+					<div className="eyebrow">Studio</div>
+					<h1>What should Claude Code build?</h1>
+					<p className="lead">Describe the task. RIAF classifies it as you type, compiles the context an agent needs, and writes one brief you can read, trim and hand over.</p>
+				</div>
+				<Btn onClick={newTask} title="Clear the prompt, the brief and the activity window">New task</Btn>
+			</header>
+			{liveRun && <div style={{ marginBottom: 16 }}><RunPanel go={(page, q) => go(page as Page, q)} /></div>}
+			<ol className="steps3" aria-label="Workflow">
+				<li className={request.trim() ? 'done' : 'now'}><b>1</b><span>Describe</span></li>
+				<li className={instr ? 'done' : request.trim() ? 'now' : ''}><b>2</b><span>Review the brief</span></li>
+				<li className={sent ? 'done' : instr ? 'now' : ''}><b>3</b><span>Send and watch it run</span></li>
+			</ol>
+			{last && !instr && !liveRun && (
+				<div className="banner" role="note">
+					<span className="muted small">A brief from an earlier session exists for this repository: <b>{last.request.slice(0, 90)}{last.request.length > 90 ? '…' : ''}</b></span>
+					<Btn sm onClick={resume}>Resume it</Btn>
+				</div>
+			)}
 
 			<section className="taskline" aria-label="Task">
 				<textarea ref={ta} value={request} onChange={e => setRequest(e.target.value)} placeholder="What should be done? Name files, symbols or error text if you have them." rows={2}
 					onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); void compile(); } }} />
 				<div className="bar">
 					<Btn kind="primary" onClick={() => void compile()} disabled={busy === 'compile' || !request.trim()}>{busy === 'compile' ? 'Compiling…' : 'Compile brief'}</Btn>
-					<span className="opt"><span className="kbd">⌘↵</span></span>
+					<span className="opt"><span className="kbd">⌘</span><span className="kbd">↵</span></span>
 					<span className="opt">budget <input type="range" min={2000} max={32000} step={1000} value={effectiveBudget} onChange={e => setBudget(Number(e.target.value))} aria-label="Pack budget" /> <b>{fmtK(effectiveBudget)}</b>{budget !== null && route && budget !== route.budget && <a href="#" onClick={e => { e.preventDefault(); setBudget(null); }}>reset to {fmtK(route.budget)}</a>}</span>
 					<span className="opt" style={{ flex: 1, minWidth: 220 }}><input className="input" value={activeFile} onChange={e => setActiveFile(e.target.value)} placeholder="Active file, if any (src/…)" aria-label="Active file" style={{ padding: '4px 8px', fontSize: 12.5 }} /></span>
 					{!request && <span className="opt">try: {EXAMPLES.map((ex, i) => <a key={i} href="#" onClick={e => { e.preventDefault(); setRequest(ex); }}>{['a bug', 'a feature', 'a question', 'a migration'][i]}</a>)}</span>}
@@ -109,6 +147,8 @@ export function Studio({ status, refresh, go }: { status: Status | null; refresh
 					</div>
 				)}
 			</section>
+
+			{!liveRun && <div style={{ marginTop: 18 }}><RunPanel go={(page, q) => go(page as Page, q)} /></div>}
 
 			{pack && instr ? (
 				<div className="stack" style={{ marginTop: 18 }}>
