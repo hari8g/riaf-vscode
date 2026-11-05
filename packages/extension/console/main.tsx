@@ -66,7 +66,10 @@ function App() {
 	return (
 		<div className="shell">
 			<nav className="rail" aria-label="Pages">
-				<div className="brand">RIAF Console</div>
+				<div className="brandbox">
+					<span className="logo"><img src="mps-logo.png" alt="Bosch MPS — Mobility Platform and Services" width={52} height={34} /></span>
+					<div className="brand">RIAF Console<small>Repository Intelligence &amp; Agent Loop</small></div>
+				</div>
 				<div className="repo">{repoName}{status?.repo.branch ? <><br />on {status.repo.branch}</> : null}</div>
 				{PAGES.map(p => <a key={p.id} href={`#/${p.id}`} className={`nav ${page === p.id ? 'active' : ''}`}>{p.icon}{p.label}</a>)}
 				<div className="hint"><span className="kbd">/</span> task <span className="kbd">⌘K</span> jump</div>

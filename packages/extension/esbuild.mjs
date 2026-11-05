@@ -81,7 +81,7 @@ const consoleApp = esbuild.context({
   outdir: 'dist/console',
   plugins: [{
     name: 'console-static',
-    setup(b) { b.onEnd(() => { mkdirSync('dist/console', { recursive: true }); cpSync('console/index.html', 'dist/console/index.html'); cpSync('console/theme.css', 'dist/console/console.css'); }); },
+    setup(b) { b.onEnd(() => { mkdirSync('dist/console', { recursive: true }); cpSync('console/index.html', 'dist/console/index.html'); cpSync('console/theme.css', 'dist/console/console.css'); cpSync('media/mps-logo-source.png', 'dist/console/mps-logo.png'); }); },
   }],
 });
 
