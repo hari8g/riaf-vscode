@@ -1,0 +1,17 @@
+# RIAF tool-call governance policy (versioned with the repo).
+# Soft ceilings add a reflection prompt; hard ceilings block exploratory calls until a plan is written.
+version: 1
+phases:
+  explore:   { soft_calls: 40, max_calls: 80, soft_tokens: 120000, max_tokens: 250000, max_minutes: 30 }
+  plan:      { soft_calls: 15, max_calls: 40, soft_tokens: 60000, max_tokens: 120000, max_minutes: 15 }
+  implement: { soft_calls: 80, max_calls: 200, soft_tokens: 250000, max_tokens: 500000, max_minutes: 90 }
+  verify:    { soft_calls: 30, max_calls: 80, soft_tokens: 120000, max_tokens: 250000, max_minutes: 30 }
+guard:
+  serve_first_reads: false   # Claude Code's Edit needs a real Read first
+  serve_repeat_reads: true
+  cache_searches: true
+  loop_threshold: 3
+prefetch:
+  enabled: true
+  min_coupling: 0.6
+  max_files: 4

@@ -2,3 +2,7 @@ node_modules/
 dist/
 *.vsix
 *.tsbuildinfo
+# RIAF local index, governor endpoint and caches (policy.yaml is meant to be committed)
+.riaf/*
+!.riaf/policy.yaml
+.claude/riaf/
