@@ -7,7 +7,7 @@ import { Badge, Button, Note, NumberInput, Row, Section, Select, StatCard, TextA
 
 type Settings = Record<string, unknown>;
 const TABS = [
-	['gateway', 'Gateway'], ['providers', 'Providers'], ['index', 'Repository Intelligence'], ['agent', 'Agent'], ['tools', 'Tools'],
+	['gateway', 'Gateway'], ['providers', 'Providers'], ['index', 'Repository Intelligence'], ['instruction', 'Intent & Instruction'], ['agent', 'Agent'], ['tools', 'Tools'],
 	['mcp', 'MCP'], ['integrations', 'Integrations'], ['rules', 'Rules'], ['usage', 'Usage'], ['claude', 'Claude Code'],
 ] as const;
 type Tab = typeof TABS[number][0];
@@ -53,6 +53,7 @@ function App() {
 				{show('gateway') && <Gateway s={s} get={get} set={set} state={state} call={call} />}
 				{show('providers') && <Providers get={get} set={set} detected={state.detected} call={call} />}
 				{show('index') && <RepoIntelligence get={get} set={set} index={state.index} call={call} />}
+				{show('instruction') && <Instruction get={get} set={set} call={call} />}
 				{show('agent') && <Agent get={get} set={set} />}
 				{show('tools') && <Tools get={get} set={set} />}
 				{show('mcp') && <Mcp mcp={state.mcp} get={get} set={set} call={call} />}
@@ -134,6 +135,28 @@ function RepoIntelligence({ get, set, index, call }: P & { index?: IndexStatus; 
 			</Row>
 			<Row label="Embedding model"><TextInput mono value={get('embeddings.model', '')} onChange={v => set('embeddings.model', v)} /></Row>
 			{index?.dbPath && <div style={{ fontSize: 11, color: 'var(--vscode-descriptionForeground)' }}>DB: <code>{index.dbPath}</code></div>}
+		</Section>
+	);
+}
+
+function Instruction({ get, set, call }: P & { call: (r: Parameters<typeof request>[0]) => Promise<void> }) {
+	return (
+		<Section id="instruction" title="Intent & Instruction" desc="RIAF 2.0: every @riaf request is classified first (lexicon → optional model arbiter → your corrections), the Context Pack is compiled with the route's budget, and a Prompt Instruction is assembled for review or for Claude Code.">
+			<Row label="Intent routing" desc="Classify each request and pick mode, tools and pack budget from the routing table. Off = the old behaviour (slash command only)."><Toggle value={get('instruction.intentRouting', true)} onChange={v => set('instruction.intentRouting', v)} /></Row>
+			<Row label="Model arbiter" desc="One small model call when the lexicon is unsure or the request is multi-intent (≈300 tokens). Uses the classify model below, else the chat model."><Toggle value={get('instruction.arbiter', true)} onChange={v => set('instruction.arbiter', v)} /></Row>
+			<Row label="classify model" desc="Cheapest model your gateway offers (Haiku-class). Empty uses the chat model."><TextInput mono value={get('models.classify', '')} onChange={v => set('models.classify', v)} placeholder="provider model id" /></Row>
+			<Row label="Plan gate" desc="Show the plan and wait before editing. default = feature and migrate tasks; all = every write task.">
+				<Select value={get('instruction.planGate', 'default')} onChange={v => set('instruction.planGate', v)} options={[{ value: 'off', label: 'Off' }, { value: 'default', label: 'Default (feature, migrate)' }, { value: 'all', label: 'All write tasks' }]} />
+			</Row>
+			<Row label="Exploration lane" desc="Run a read-only investigation in parallel with planning; its findings are attached to the plan steps."><Toggle value={get('instruction.exploreLane', true)} onChange={v => set('instruction.exploreLane', v)} /></Row>
+			<Row label="Show the review card" desc="Route line, collapsible instruction and the Send to Claude Code / Edit / Wrong intent buttons in every @riaf reply."><Toggle value={get('instruction.showCard', true)} onChange={v => set('instruction.showCard', v)} /></Row>
+			<Row label="Run automatically" desc="Off = build the instruction, show the card and wait for “go” (or Send to Claude Code)."><Toggle value={get('instruction.autoRun', true)} onChange={v => set('instruction.autoRun', v)} /></Row>
+			<Row label="Hook pack budget" desc="Max tokens the Claude Code UserPromptSubmit hook injects per task"><NumberInput min={2000} max={64000} step={1000} value={get('instruction.hookBudget', 12000)} onChange={v => set('instruction.hookBudget', v)} /></Row>
+			<div style={{ display: 'flex', gap: 8 }}>
+				<Button onClick={() => call({ type: 'command', id: 'riaf.compileInstruction' })}>Compile instruction…</Button>
+				<Button onClick={() => call({ type: 'command', id: 'riaf.openInstruction' })}>Open current instruction</Button>
+				<Button onClick={() => call({ type: 'command', id: 'riaf.sendToClaudeCode' })}>Send to Claude Code</Button>
+			</div>
 		</Section>
 	);
 }

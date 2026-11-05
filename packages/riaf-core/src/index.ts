@@ -169,7 +169,17 @@ export {
 	GitHistory, classifyCommit, extractTickets, extractWhy, extractDecisionSentences, noiseReason, parseRenamePath, hashAuthor, formatHistoryCard,
 	type HistoryOptions, type IntentClass, type CommitRow, type CoChangeNeighbor, type OwnerInfo, type Hotspot, type CommitSummary, type Decision, type HistoryCard, type MineResult,
 } from './v2/gitHistory.js';
-export { parseIntent, splitIdentifier, type ParsedIntent, type IntentType, type IntentEntity } from './v2/intent.js';
+export { parseIntent, splitIdentifier, intentTypeScores, INTENT_TYPES, type ParsedIntent, type IntentType, type IntentEntity } from './v2/intent.js';
+export {
+	routeIntent, needsArbiter, isMultiIntent, parseArbiter, formatRouteLine, recordIntentFeedback, loadIntentFeedback, feedbackVote,
+	ROUTING_TABLE, ARBITER_SYSTEM, ASK_THRESHOLD, ARBITER_THRESHOLD, FEEDBACK_FILE,
+	type IntentRoute, type RouteOptions, type RouteRule, type RouteMode, type RouteTools, type RouteStage, type RouteSource, type ArbiterResult, type IntentFeedback,
+} from './v2/intentRouter.js';
+export { findRuleFiles, loadProjectRules, RULES_MAX_CHARS, type ProjectRules } from './v2/projectRules.js';
+export {
+	buildInstruction, saveInstruction, loadCurrentInstruction, listInstructions, instructionDir, stableSection, claudeMdInstructionBlock, upsertClaudeMdInstruction,
+	INSTRUCTION_SCHEMA, INSTRUCTION_DIR, type PromptInstruction, type BuildInstructionOptions, type PolicyBudgets, type SavedInstruction,
+} from './v2/instruction.js';
 export { PACK_SCHEMA_VERSION, validatePack, type ContextPack, type PackItem, type PackItemKind, type PackItemForm } from './v2/packTypes.js';
 export { PackCompiler, rebudget, slicePack, mergeRanges, RANKER_VERSION, type CompileOptions } from './v2/compiler.js';
 export { render, renderMarkdown, claudeMdFragment, upsertClaudeMd, PROTOCOL, RENDER_TARGETS, type RenderTarget } from './v2/render.js';

@@ -17,6 +17,7 @@ import { appendMemory, extractRememberedFact, memoryPromptBlock, readMemory } fr
 import type { RiafSettings } from './config.js';
 import type { ModelTransport, ToolCall, TransportMessage } from './modelTransport.js';
 import { COMMAND_TOOLS, EDIT_TOOLS, READ_ONLY_TOOLS, TOOL_SPECS, executeTool, integrationToolSpecs, type ToolContext } from './tools/toolRegistry.js';
+import { runExplore } from './exploreAgent.js';
 import { listAgentMcpTools } from './mcpClient.js';
 import { createTransport } from './modelTransport.js';
 import { loadHooks } from './tools/hooks.js';
@@ -51,6 +52,17 @@ export interface AgentRunOptions {
 	diagnosticsSettleMs?: number;
 	/** Override the stall watchdog (tests). Production uses the clamped setting. */
 	stallTimeoutMs?: number;
+	/**
+	 * RIAF context prelude (a rendered Context Pack or Prompt Instruction) prepended to this turn's user
+	 * message so the model starts from the index instead of exploring. Volatile, so it is never part
+	 * of the cached system prefix.
+	 */
+	contextPrelude?: string;
+	/**
+	 * Read-only exploration lane run concurrently with planning (RIAF Design B). Its report is handed to
+	 * `onExplored`, which may return a replacement prelude (e.g. the instruction rebuilt with findings).
+	 */
+	exploreLane?: { task: string; maxSteps?: number; onExplored?: (report: string) => string | undefined | Promise<string | undefined> };
 	/** Directory whose `.riaf/memory.md` is read and, for "remember that", written. Absent in tests. */
 	memoryHome?: string;
 	/** Explicit memory text. When omitted and memoryHome is set, the file is read. */
@@ -155,7 +167,9 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 	const { transport, settings: s, stream, token, usage } = o;
 	const limits = getAgentLoopLimits(toGlobalSettings(s));
 	const gs = toGlobalSettings(s);
-	const history: ChatMessage[] = [...o.history, userMsg(o.userPrompt)];
+	const withPrelude = (prelude: string | undefined) => prelude ? `<riaf_context>\n${prelude}\n</riaf_context>\n\n${o.userPrompt}` : o.userPrompt;
+	const history: ChatMessage[] = [...o.history, userMsg(withPrelude(o.contextPrelude))];
+	const turnIdx = history.length - 1;
 	const abort = new AbortController();
 	token.onCancellationRequested(() => abort.abort());
 
@@ -225,6 +239,19 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 	// files whose one-hop neighbourhood has already been shown this run (the preamble before an edit)
 	const briefedFiles = new Set<string>(profile?.activeFile && profile.neighborhood ? [profile.activeFile] : []);
 
+	// 0. explore lane — read-only investigation that runs while the plan is generated (RIAF Design B).
+	let explorePromise: Promise<string> | null = null;
+	if (o.exploreLane && o.mode !== 'verify') {
+		const laneTask = o.exploreLane.task;
+		const laneSteps = o.exploreLane.maxSteps ?? Math.min(6, s.agent.exploreMaxSteps);
+		stream.progress('RIAF: exploring in a read-only lane…');
+		explorePromise = (async () => {
+			const exploreTransport = s.models.explore ? await createTransport(undefined, s.models.explore) ?? transport : transport;
+			const r = await runExplore(laneTask, { transport: exploreTransport, ctx: { ...toolCtx, progress: undefined }, allSpecs: tools, executeTool, onUsage: u => meter(u, 'agent:explore-lane'), log: o.log }, laneSteps);
+			return r.report;
+		})().catch(e => { o.log(`explore lane failed: ${String(e)}`); return ''; });
+	}
+
 	// 1. plan — reuse a pending plan, reactivate a skipped one on "continue", else generate with session context.
 	// Leftover items are never marked done just because the run ended.
 	let plan: PlanMessage | null = null;
@@ -247,6 +274,16 @@ export async function runAgent(o: AgentRunOptions): Promise<AgentRunResult> {
 				history[resolved.priorPlanMessageIdx] = skipRemainingPlanItems(history[resolved.priorPlanMessageIdx] as PlanMessage);
 			}
 			plan = resolved.plan; history.push(plan); renderPlan(stream, plan);
+		}
+	}
+
+	if (explorePromise) {
+		const report = await explorePromise;
+		if (report.trim()) {
+			const replacement = await Promise.resolve(o.exploreLane!.onExplored?.(report)).catch(() => undefined);
+			const prelude = replacement ?? (o.contextPrelude ? `${o.contextPrelude}\n\n## Findings from exploration\n${report}` : `## Findings from exploration\n${report}`);
+			history[turnIdx] = userMsg(withPrelude(prelude));
+			stream.markdown(`\n<details><summary>Exploration lane report</summary>\n\n${report}\n\n</details>\n\n`);
 		}
 	}
 

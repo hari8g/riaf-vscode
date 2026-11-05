@@ -6,7 +6,10 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
-import { blobHash, rebudget, render, Riaf2, type ContextPack, type RenderTarget } from '@bosch-mps/riaf-core';
+import {
+	blobHash, buildInstruction, formatRouteLine, loadCurrentInstruction, rebudget, render, Riaf2, routeIntent, saveInstruction,
+	type BuildInstructionOptions, type ContextPack, type IntentRoute, type PromptInstruction, type RenderTarget, type RouteOptions,
+} from '@bosch-mps/riaf-core';
 import {
 	formatMetrics, GovernorServer, handleClaudeHook, loadPolicyFile, ToolGovernor,
 	type CacheEntry, type CacheStore, type ClaudeHookPayload, type GovernorBackend, type GovernorMetrics, type GovernorPolicy,
@@ -19,6 +22,8 @@ export interface Riaf2HostOptions {
 	hookPackBudget?: number;
 	/** Disable governance (escape hatch `--no-guard`). */
 	governEnabled?: boolean;
+	/** Tier-2 intent arbiter (one small model call); absent = lexicon only. */
+	classify?: RouteOptions['classify'];
 }
 
 /** tool_cache table as the governor's CacheStore. */
@@ -54,6 +59,8 @@ export function treeVersionFn(root: string, memoMs = 400): () => string {
 export class Riaf2Host {
 	private readonly governors = new Map<string, ToolGovernor>();
 	private readonly promptsSeen = new Set<string>();
+	/** Last route per Claude session: a new pack is compiled only when the intent type or entities change. */
+	private readonly lastRoute = new Map<string, { type: string; entities: string }>();
 	private server: GovernorServer | null = null;
 	private readonly treeVersion: () => string;
 	private policy: GovernorPolicy;
@@ -165,6 +172,24 @@ export class Riaf2Host {
 		return pack;
 	}
 
+	/** Route a request (tier 1 + optional arbiter + per-repo feedback). */
+	async route(request: string, opts: Omit<RouteOptions, 'root' | 'classify' | 'architectureSummary'> = {}): Promise<IntentRoute> {
+		const arch = await this.riaf.architecture().catch(() => null);
+		return routeIntent(request, { ...opts, root: this.root, classify: this.o.classify, architectureSummary: arch?.summary });
+	}
+
+	/** Route → compile (budget / stage / scope from the route) → Prompt Instruction, saved under .claude/riaf/instructions. */
+	async instruct(request: string, opts: { route?: IntentRoute; command?: string; activeFile?: string; selection?: string; budget?: number; findings?: string[]; host?: BuildInstructionOptions['host']; fresh?: boolean } = {}): Promise<{ route: IntentRoute; pack: ContextPack; instruction: PromptInstruction; path: string }> {
+		const route = opts.route ?? await this.route(request, { command: opts.command, activeFile: opts.activeFile, selection: opts.selection });
+		const { pack } = await this.compile(request, { budget: opts.budget ?? route.budget, stage: route.stage, scope: route.scope, activeFile: opts.activeFile, selection: opts.selection, fresh: opts.fresh });
+		const instruction = buildInstruction(pack, { route, root: this.root, activeFile: opts.activeFile, policy: this.policy, findings: opts.findings, host: opts.host ?? 'claude' });
+		const saved = saveInstruction(this.root, instruction);
+		this.log(`instruction ${instruction.instruction_id}: ${formatRouteLine(route, { items: pack.items.length, tokens: pack.budget.used_tokens })}`);
+		return { route, pack, instruction, path: saved.currentPath };
+	}
+
+	currentInstruction(): PromptInstruction | null { return loadCurrentInstruction(this.root); }
+
 	statusText(): string {
 		this.flushMetrics();
 		const live = [...this.governors.values()].map(g => formatMetrics(g.metrics()));
@@ -193,10 +218,17 @@ export class Riaf2Host {
 			onUserPrompt: async (prompt, p) => {
 				const sid = p.session_id ?? 'default';
 				const text = prompt.trim();
-				if (this.promptsSeen.has(sid) || text.startsWith('/') || text.split(/\s+/).length < 4) return undefined;
+				if (text.startsWith('/') || text.split(/\s+/).length < 4) return undefined;
+				const route = await this.route(text);
+				const key = { type: route.type, entities: route.intent.entities.filter(e => e.kind !== 'term').map(e => e.value).sort().join('|') };
+				const last = this.lastRoute.get(sid);
+				// Same intent and entities as the last prompt of this session → the current instruction still applies.
+				if (last && last.type === key.type && (last.entities === key.entities || !key.entities)) return undefined;
+				this.lastRoute.set(sid, key);
 				this.promptsSeen.add(sid);
-				const { pack } = await this.compile(text, { budget: this.o.hookPackBudget ?? 12_000 });
-				return `RIAF compiled a Context Pack for this task (${pack.items.length} items, ${pack.budget.used_tokens} tokens; also at .claude/riaf/pack.md and riaf://pack/current).\n\n${render(pack, 'claude')}`;
+				if (route.askFirst) return `RIAF could not classify this request confidently (${route.type}, ${route.confidence}). Before exploring, ask the developer:\n${route.questions.map(q => `- ${q}`).join('\n')}`;
+				const { pack, instruction } = await this.instruct(text, { route, budget: Math.min(route.budget, this.o.hookPackBudget ?? 12_000) });
+				return `RIAF compiled instruction ${instruction.instruction_id} for this task (${formatRouteLine(route, { items: pack.items.length, tokens: pack.budget.used_tokens })}; also at .claude/riaf/instructions/current.md and riaf://instruction/current).\n\n${instruction.markdown}`;
 			},
 		});
 	}

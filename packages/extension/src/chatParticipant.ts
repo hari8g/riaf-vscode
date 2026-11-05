@@ -15,6 +15,8 @@ import { createTransport } from './modelTransport.js';
 import { readRules, rulesForPrompt } from './rules.js';
 import { loadThread, saveThread } from './threadStore.js';
 import type { UsageMeter } from './usage.js';
+import { hostFor, planGateApplies, prepareTurn, renderCard, registerInstructionCommands, type PreparedTurn } from './instructionFlow.js';
+import { loadCurrentInstruction } from '@bosch-mps/riaf-core';
 
 /**
  * Per-chat-thread agent history (with tool results), keyed by a thread id we stash in each
@@ -159,9 +161,45 @@ export function registerChatParticipant(ctx: vscode.ExtensionContext, indexes: I
 		const prompt = [request.prompt, ...refs, notes].filter(Boolean).join('\n');
 
 		const rules = rulesForPrompt(await readRules(folder));
+
+		// RIAF 2.0: classify → compile → Prompt Instruction before any model loop (Designs A/B).
+		let effectiveMode: AgentMode = mode;
+		let prepared: PreparedTurn | undefined;
+		let gated = false;
+		const lastMeta = chatCtx.history.length ? (chatCtx.history[chatCtx.history.length - 1] as { result?: { metadata?: { planGated?: boolean; instructionId?: string } } }).result?.metadata : undefined;
+		const implementingGatedPlan = !!lastMeta?.planGated && /^(implement|go ahead|continue|do it|proceed)/i.test(request.prompt.trim());
+		if (settings.instruction.intentRouting && !implementingGatedPlan) {
+			const host = await hostFor(indexes, folder, transport);
+			const selection = vscode.window.activeTextEditor && !vscode.window.activeTextEditor.selection.isEmpty ? vscode.window.activeTextEditor.document.getText(vscode.window.activeTextEditor.selection) : undefined;
+			const route = await host.route(request.prompt, { command: request.command, activeFile, selection });
+			if (route.askFirst) {
+				stream.markdown(`Before I start, I need to know (${route.type}, confidence ${route.confidence}):\n${route.questions.map(q => `- ${q}`).join('\n')}\n\n_Answer in the next message, or use /plan, /explain or /verify to force a mode._`);
+				thread.turnStarts.pop();
+				return { metadata: { threadId, askedFirst: true } };
+			}
+			stream.progress(`RIAF: ${route.type} (${route.confidence}) — compiling the context pack…`);
+			prepared = await prepareTurn(host, request.prompt, { command: request.command, activeFile, selection }).catch(e => { indexes.log(`instruction failed: ${String(e)}`); return undefined; });
+			if (prepared) {
+				if (!request.command) { effectiveMode = route.mode; }
+				gated = effectiveMode === 'agent' && planGateApplies(route, settings);
+				if (gated) { effectiveMode = 'plan'; }
+				if (settings.instruction.showCard) { renderCard(stream, prepared, folder, { gated }); }
+				if (!settings.instruction.autoRun && effectiveMode !== 'plan' && effectiveMode !== 'explain') {
+					stream.markdown('_`riaf.instruction.autoRun` is off: review the instruction, then send `@riaf go` to run it here, or send it to Claude Code._');
+					thread.turnStarts.pop();
+					return { metadata: { threadId, instructionId: prepared.instruction.instruction_id, awaitingGo: true } };
+				}
+			}
+		}
+		const goWithCurrent = /^(go|run it|run here)$/i.test(request.prompt.trim()) ? loadCurrentInstruction(folder.uri.fsPath) : null;
+		const prelude = prepared?.instruction.markdown ?? goWithCurrent?.markdown ?? (implementingGatedPlan ? loadCurrentInstruction(folder.uri.fsPath)?.markdown : undefined);
 		const result = await runAgent({
-			transport, index, folder, settings, usage, mode, userPrompt: prompt, history, activeFile, rules, stream, token, log: m => indexes.log(m), checkpoint,
+			transport, index, folder, settings, usage, mode: effectiveMode, userPrompt: prompt, history, activeFile, rules, stream, token, log: m => indexes.log(m), checkpoint,
 			memoryHome: homedir(),
+			contextPrelude: prelude,
+			exploreLane: prepared && settings.instruction.exploreLane && effectiveMode !== 'explain' && effectiveMode !== 'verify'
+				? { task: `${request.prompt}\n\nFind the exact files, symbols and line ranges involved; confirm or correct the plan steps: ${prepared.instruction.plan.map((s, i) => `${i + 1}. ${s}`).join('; ')}` }
+				: undefined,
 		});
 		thread.history = result.history;
 		threads.delete(threadId); threads.set(threadId, thread);                 // re-insert → most recent last
@@ -170,7 +208,7 @@ export function registerChatParticipant(ctx: vscode.ExtensionContext, indexes: I
 		if (checkpoint && Object.keys(checkpoint.current.files).length) {
 			stream.markdown(`\n\n_Checkpoint saved for ${Object.keys(checkpoint.current.files).length} file(s) — **RIAF: Rewind** restores them._`);
 		}
-		return { metadata: { threadId, iterations: result.iterations, editedFiles: result.editedFiles, stopped: result.stopped } };
+		return { metadata: { threadId, iterations: result.iterations, editedFiles: result.editedFiles, stopped: result.stopped, planGated: gated, instructionId: prepared?.instruction.instruction_id, intent: prepared?.route.type } };
 	};
 
 	ctx.subscriptions.push(vscode.commands.registerCommand('riaf.rewind', async () => {
@@ -205,12 +243,15 @@ export function registerChatParticipant(ctx: vscode.ExtensionContext, indexes: I
 		void vscode.window.showInformationMessage(`RIAF rewind → turn ${pick.cp.turn}: ${parts.join('; ')}`);
 	}));
 
+	registerInstructionCommands(ctx, indexes);
 	const participant = vscode.chat.createChatParticipant('riaf.agent', handler);
 	participant.iconPath = vscode.Uri.joinPath(ctx.extensionUri, 'media', 'icon.png');
 	participant.followupProvider = {
 		provideFollowups(result) {
-			const md = result.metadata as { editedFiles?: string[]; stopped?: string } | undefined;
+			const md = result.metadata as { editedFiles?: string[]; stopped?: string; planGated?: boolean; awaitingGo?: boolean } | undefined;
 			const f: vscode.ChatFollowup[] = [];
+			if (md?.planGated) { f.push({ prompt: 'Implement the plan', label: 'Implement the plan' }); }
+			if (md?.awaitingGo) { f.push({ prompt: 'go', label: 'Run here' }); }
 			if (md?.editedFiles?.length) { f.push({ prompt: 'Run the tests and fix anything that fails', label: 'Verify', command: 'verify' }); }
 			if (md?.stopped === 'max_iterations') { f.push({ prompt: 'Continue where you left off', label: 'Continue' }); }
 			return f;

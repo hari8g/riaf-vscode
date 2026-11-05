@@ -39,7 +39,8 @@ export const SETTING_KEYS = [
 	'agent.enableLightAgent', 'agent.enableParallelReadBatching', 'agent.sessionBudgetUsd', 'agent.sandboxVerificationNudge',
 	'usage.readClaudeCodeTranscripts',
 	'claudeCode.writeUserSettings', 'claudeCode.proxyUrl', 'claudeCode.noProxy', 'claudeCode.caCertPath', 'claudeCode.proxyBridge', 'claudeCode.proxyBridgePort',
-	'models.main', 'models.plan', 'models.summary', 'models.explore', 'models.critic', 'models.commit', 'models.autocomplete',
+	'models.main', 'models.plan', 'models.summary', 'models.explore', 'models.critic', 'models.commit', 'models.autocomplete', 'models.classify',
+	'instruction.intentRouting', 'instruction.arbiter', 'instruction.planGate', 'instruction.exploreLane', 'instruction.showCard', 'instruction.autoRun', 'instruction.hookBudget',
 	'general.aiInstructions', 'general.disableSystemPrompt', 'general.metricsOptOut',
 	'webSearch.enabled', 'webSearch.provider', 'security.extraRules', 'mcp.disabledServers',
 	'providers', 'agent.approveTerminal', 'agent.approveMcp',
@@ -207,6 +208,7 @@ export async function handle(req: HostRequest, d: PanelDeps): Promise<HostRespon
 			return { rules: req.text ?? '' };
 		}
 		case 'setupClaudeCode': await setupClaudeCode(d.ctx, d.indexes, d.bridge); return statusBlock(d);
+		case 'command': if (typeof req.id === 'string' && req.id.startsWith('riaf.')) { await vscode.commands.executeCommand(req.id); } return {};
 		case 'bridgeStart': await d.bridge?.restart(); return statusBlock(d);
 		case 'bridgeStop': await d.bridge?.stop(); return statusBlock(d);
 		case 'bridgeLog': d.bridge?.output.show(true); return {};

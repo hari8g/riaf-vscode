@@ -18,6 +18,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { RiafIndex, Riaf2, setSqliteModuleLoader, setTreeSitterWasmDir } from '@bosch-mps/riaf-core';
 import { Riaf2Host } from './riaf2Host.js';
+import { formatRouteLine } from '@bosch-mps/riaf-core';
 import { recordToolCall, toolStatsPathFor } from './toolStats.js';
 import { FileLedger, nextReadySubtasks, renderLedger, verifySubtask } from '@bosch-mps/riaf-engine';
 import { executeOrgTool, executeSearchTool, ORG_TOOL_SPECS, SEARCH_TOOL_SPECS } from './tools/orgTools.js';
@@ -149,6 +150,27 @@ server.tool('riaf_compile',
 		return text(out);
 	});
 
+server.tool('riaf_classify',
+	'Classify a task before exploring: intent type (bugfix|feature|refactor|explain|test|migrate|review), confidence, entities, constraints, open questions, and the route RIAF would take (mode, tool set, pack budget, stage, plan gate). Free: no model call unless the lexicon is unsure.',
+	{ request: z.string(), activeFile: z.string().optional(), command: z.string().optional().describe('An explicit slash command (plan|explain|verify) that overrides the classifier') },
+	async ({ request, activeFile, command }) => {
+		const r = await host.route(request, { activeFile, command });
+		return text(JSON.stringify({ type: r.type, secondaryType: r.secondaryType, confidence: r.confidence, source: r.source, mode: r.mode, tools: r.tools, budget: r.budget, stage: r.stage, planGate: r.planGate, askFirst: r.askFirst, questions: r.questions, scope: r.scope, entities: r.intent.entities, constraints: r.intent.constraints, acceptance: r.intent.acceptance, line: formatRouteLine(r) }, null, 2));
+	});
+
+server.tool('riaf_instruction',
+	'The Prompt Instruction for the current task: route + Context Pack + plan + verification + project rules + budgets in one document. Without a request returns the current one; with a request classifies, compiles and saves a new one (.claude/riaf/instructions/current.md). Follow its Plan and Protocol sections.',
+	{ request: z.string().optional(), activeFile: z.string().optional(), budget: z.number().optional(), findings: z.array(z.string()).optional().describe('Evidence lines from exploration ("2: path:line — note" attaches to plan step 2)'), fresh: z.boolean().optional() },
+	async ({ request, activeFile, budget, findings, fresh }) => {
+		if (!request) {
+			const cur = host.currentInstruction();
+			return cur ? text(cur.markdown) : { ...text('No instruction yet — call riaf_instruction with a request.'), isError: true };
+		}
+		const { instruction, route, pack } = await host.instruct(request, { activeFile, budget, findings, fresh });
+		log(`instruction ${instruction.instruction_id}: ${route.type} ${route.confidence}, ${pack.items.length} items`);
+		return text(instruction.markdown);
+	});
+
 server.tool('riaf_lookup',
 	'Answer a read from the index before using Read/Grep/LS: a file (optionally a line range), a symbol definition, a directory listing, or an indexed search. Returns the content or a miss with the best indexed alternatives.',
 	{ path: z.string().optional(), startLine: z.number().optional(), endLine: z.number().optional(), symbol: z.string().optional(), dir: z.string().optional(), query: z.string().optional(), limit: z.number().optional() },
@@ -201,6 +223,11 @@ server.registerResource('riaf-pack-scoped', new ResourceTemplate('riaf://pack/cu
 		const scope = Array.isArray(vars.scope) ? vars.scope[0] : vars.scope;
 		const pack = riaf2.currentPack(scope ? decodeURIComponent(scope) : undefined);
 		return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: pack ? riaf2.render(pack, 'claude') : 'No pack compiled yet — call riaf_compile.' }] };
+	});
+server.registerResource('riaf-instruction-current', 'riaf://instruction/current', { title: 'Current RIAF Prompt Instruction', mimeType: 'text/markdown' },
+	async uri => {
+		const cur = host.currentInstruction();
+		return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: cur ? cur.markdown : 'No instruction compiled yet — call riaf_instruction with a request, or run /riaf-task.' }] };
 	});
 server.registerResource('riaf-conventions', 'riaf://repo/conventions', { title: 'Repository conventions', mimeType: 'text/markdown' },
 	async uri => ({ contents: [{ uri: uri.href, mimeType: 'text/markdown', text: await riaf2.conventionsText() }] }));

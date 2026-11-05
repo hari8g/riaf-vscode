@@ -1693,6 +1693,29 @@
         "title": "RIAF: Export pack",
         "category": "RIAF",
         "icon": "$(export)"
+      },
+      {
+        "command": "riaf.sendToClaudeCode",
+        "title": "RIAF: Send instruction to Claude Code",
+        "category": "RIAF",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "riaf.compileInstruction",
+        "title": "RIAF: Compile instruction (classify + pack)",
+        "category": "RIAF",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "riaf.openInstruction",
+        "title": "RIAF: Open current instruction",
+        "category": "RIAF",
+        "icon": "$(file)"
+      },
+      {
+        "command": "riaf.intentFeedback",
+        "title": "RIAF: Correct intent classification",
+        "category": "RIAF"
       }
     ],
     "configuration": {
@@ -2294,6 +2317,51 @@
           "type": "boolean",
           "default": true,
           "description": "Ask before an integration tool changes data (create Jira issue, comment on a merge request, update a Confluence page, …). Every write is recorded in .riaf/audit.jsonl either way."
+        },
+        "riaf.models.classify": {
+          "type": "string",
+          "default": "",
+          "description": "Model id for the intent arbiter (tier 2 of intent routing). Use the cheapest model the gateway offers. Empty uses the chat or gateway model."
+        },
+        "riaf.instruction.intentRouting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Classify every @riaf request first (bugfix/feature/refactor/explain/test/migrate/review) and pick mode, tools and pack budget from the routing table."
+        },
+        "riaf.instruction.arbiter": {
+          "type": "boolean",
+          "default": true,
+          "description": "When the lexicon classifier is unsure or the request is multi-intent, ask a small model to arbitrate (one ≈300-token call)."
+        },
+        "riaf.instruction.planGate": {
+          "type": "string",
+          "enum": [
+            "off",
+            "default",
+            "all"
+          ],
+          "default": "default",
+          "description": "Show the plan and wait for approval before edits: default = feature and migrate tasks, all = every write task, off = never."
+        },
+        "riaf.instruction.exploreLane": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run a read-only exploration lane in parallel with planning; its findings are attached to the plan steps of the instruction."
+        },
+        "riaf.instruction.showCard": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the review card (route line, collapsible instruction, Send to Claude Code / Edit / Wrong intent buttons) in @riaf replies."
+        },
+        "riaf.instruction.autoRun": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run the task immediately after the instruction is built. Off = show the card and wait for 'go' or Send to Claude Code."
+        },
+        "riaf.instruction.hookBudget": {
+          "type": "number",
+          "default": 12000,
+          "description": "Token budget of the Context Pack the Claude Code UserPromptSubmit hook injects per task."
         }
       }
     },
@@ -2376,6 +2444,19 @@
         },
         {
           "command": "riaf.exportPack"
+        },
+        {
+          "command": "riaf.sendToClaudeCode"
+        },
+        {
+          "command": "riaf.compileInstruction"
+        },
+        {
+          "command": "riaf.openInstruction"
+        },
+        {
+          "command": "riaf.intentFeedback",
+          "when": "false"
         }
       ]
     },
